@@ -18,8 +18,6 @@ work before exposing the bot to untrusted users.
   timeout and per-source metrics.
 - Track failing feeds and expose an administrator health report.
 - Add structured logging and a container health check.
-- Move runtime configuration such as intervals, limits, and timeouts to
-  environment variables.
 - Define a backup and retention policy for `trends.db`.
 
 ## Product Quality

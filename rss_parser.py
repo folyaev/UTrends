@@ -8,9 +8,10 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from collections import defaultdict
+from config import env_int
 
-FETCH_TIMEOUT_SECONDS = 5
-SEARCH_MAX_WORKERS = 24
+FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)
+SEARCH_MAX_WORKERS = env_int("RSS_SEARCH_MAX_WORKERS", 24)
 DEFAULT_HEADERS = {'User-Agent': 'UTrendsBot/1.0 (Telegram news aggregator)'}
 
 def normalize_text(text):

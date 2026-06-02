@@ -77,6 +77,9 @@ Copy-Item .env.example .env
 `chat_id` администраторов через запятую в `ADMIN_CHAT_IDS`. Только
 администраторы могут менять общий список RSS-лент через `/addfeed`.
 
+Интервалы, лимиты и сетевые timeout-ы также можно переопределить в `.env`.
+Доступные параметры и значения по умолчанию перечислены в `.env.example`.
+
 Запуск:
 
 ```powershell
@@ -115,7 +118,7 @@ python bot.py
 Быстрая проверка синтаксиса:
 
 ```powershell
-python -m py_compile .\bot.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m py_compile .\bot.py .\config.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
 python -m unittest discover -s tests -v
 ```
 

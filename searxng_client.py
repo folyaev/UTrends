@@ -5,8 +5,10 @@ import requests
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from config import env_int
 
 SEARXNG_BASE_URL = os.getenv("SEARXNG_BASE_URL", "http://host.docker.internal:8888")
+SEARXNG_TIMEOUT_SECONDS = env_int("SEARXNG_TIMEOUT_SECONDS", 10)
 
 # Стоп-слова для русского и английского
 _STOP_WORDS = {
@@ -88,7 +90,7 @@ def search(query: str, categories: str = 'news', language: str = 'ru-RU',
         resp = requests.get(
             f"{SEARXNG_BASE_URL}/search",
             params=params,
-            timeout=10,
+            timeout=SEARXNG_TIMEOUT_SECONDS,
             headers={'User-Agent': 'UTrendsBot/1.0'}
         )
         resp.raise_for_status()

@@ -18,6 +18,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from config import env_int
 from telegram_html import html_link, html_text
 from url_utils import normalize_article_url
 
@@ -32,14 +33,14 @@ ADMIN_CHAT_IDS        = {
     for chat_id in os.getenv("ADMIN_CHAT_IDS", "").split(",")
     if chat_id.strip().lstrip("-").isdigit()
 }
-DIGEST_INTERVAL_HOURS = 6
-WATCHDOG_INTERVAL_HRS = 1
-WATCHDOG_WINDOW_HRS   = 2
-DIGEST_WINDOW_HRS     = 24
-SEARCH_WINDOW_HRS     = 48
-SEARCH_TIMEOUT_SECONDS = 30
-FORCE_TRENDS_LIMIT    = 5
-MAX_SEARCH_RESULTS    = 10
+DIGEST_INTERVAL_HOURS  = env_int("DIGEST_INTERVAL_HOURS", 6)
+WATCHDOG_INTERVAL_HRS  = env_int("WATCHDOG_INTERVAL_HOURS", 1)
+WATCHDOG_WINDOW_HRS    = env_int("WATCHDOG_WINDOW_HOURS", 2)
+DIGEST_WINDOW_HRS      = env_int("DIGEST_WINDOW_HOURS", 24)
+SEARCH_WINDOW_HRS      = env_int("SEARCH_WINDOW_HOURS", 48)
+SEARCH_TIMEOUT_SECONDS = env_int("SEARCH_TIMEOUT_SECONDS", 30)
+TELEGRAM_TIMEOUT_SECONDS = env_int("TELEGRAM_TIMEOUT_SECONDS", 30)
+FORCE_TRENDS_LIMIT     = env_int("FORCE_TRENDS_LIMIT", 5)
 RADAR_PRIORITY_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -50,7 +51,7 @@ RADAR_PRIORITY_DOMAINS = (
     "x.com",
     "twitter.com",
 )
-STALE_DAYS            = 14   # через сколько дней без новостей спрашивать о подписке
+STALE_DAYS            = env_int("STALE_DAYS", 14)   # через сколько дней без новостей спрашивать о подписке
 # Абсолютные пути — не зависят от рабочей директории при запуске
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH    = os.path.join(BASE_DIR, "trends.db")
@@ -68,7 +69,7 @@ if not BOT_TOKEN:
 
 bot = Bot(
     token=BOT_TOKEN,
-    session=AiohttpSession(timeout=30),  # 30с вместо дефолтных 5с
+    session=AiohttpSession(timeout=TELEGRAM_TIMEOUT_SECONDS),
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp  = Dispatcher()
