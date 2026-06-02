@@ -19,6 +19,7 @@ from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButt
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import env_int
+from feed_security import fetch_public_feed
 from telegram_html import html_link, html_text
 from url_utils import normalize_article_url
 
@@ -41,6 +42,7 @@ SEARCH_WINDOW_HRS      = env_int("SEARCH_WINDOW_HOURS", 48)
 SEARCH_TIMEOUT_SECONDS = env_int("SEARCH_TIMEOUT_SECONDS", 30)
 TELEGRAM_TIMEOUT_SECONDS = env_int("TELEGRAM_TIMEOUT_SECONDS", 30)
 FORCE_TRENDS_LIMIT     = env_int("FORCE_TRENDS_LIMIT", 5)
+RSS_FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)
 RADAR_PRIORITY_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -268,7 +270,7 @@ async def addfeed_handler(message: types.Message):
         return
 
     args = message.text.split(maxsplit=1)
-    if len(args) < 2 or not args[1].startswith('http'):
+    if len(args) < 2:
         await message.reply(
             "Укажите URL RSS-ленты. Пример:\n"
             "<code>/addfeed https://example.com/feed.rss</code>",
@@ -279,8 +281,14 @@ async def addfeed_handler(message: types.Message):
     url = args[1].strip()
     await message.reply(f"🔍 <i>Проверяю RSS-ленту: {html_text(url)}</i>", parse_mode=ParseMode.HTML)
 
-    # Валидируем в отдельном потоке
-    feed = await asyncio.to_thread(feedparser.parse, url)
+    # Валидируем URL и каждый редирект до передачи контента feedparser.
+    try:
+        feed_content = await asyncio.to_thread(fetch_public_feed, url, RSS_FETCH_TIMEOUT_SECONDS)
+    except Exception as e:
+        await message.reply(f"❌ Не удалось загрузить RSS-ленту: {html_text(e)}")
+        return
+
+    feed = await asyncio.to_thread(feedparser.parse, feed_content)
     if feed.bozo and not feed.entries:
         await message.reply(
             "❌ Не удалось прочитать RSS-ленту. Проверьте URL — это должна быть рабочая RSS/Atom ссылка."

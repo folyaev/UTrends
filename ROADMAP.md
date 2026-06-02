@@ -5,8 +5,6 @@ work before exposing the bot to untrusted users.
 
 ## Required Before Public Deployment
 
-- Add SSRF protection for feed URLs: allow only `http` and `https`, reject
-  loopback and private network addresses, and re-check redirects.
 - Replace ad hoc SQLite schema changes with versioned migrations.
 - Add integration tests for Radar deduplication, scheduler jobs, callback
   ownership checks, and failed Telegram sends.
