@@ -18,6 +18,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram_html import html_link, html_text
 from url_utils import normalize_article_url
 
 load_dotenv()
@@ -26,6 +27,11 @@ logging.basicConfig(level=logging.INFO)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BOT_TOKEN             = os.getenv("BOT_TOKEN")
+ADMIN_CHAT_IDS        = {
+    int(chat_id)
+    for chat_id in os.getenv("ADMIN_CHAT_IDS", "").split(",")
+    if chat_id.strip().lstrip("-").isdigit()
+}
 DIGEST_INTERVAL_HOURS = 6
 WATCHDOG_INTERVAL_HRS = 1
 WATCHDOG_WINDOW_HRS   = 2
@@ -157,6 +163,9 @@ def is_priority_radar_source(item: dict) -> bool:
 def radar_sort_key(item: dict) -> tuple[int, float]:
     return (0 if is_priority_radar_source(item) else 1, -(item.get('time') or 0))
 
+def is_admin(chat_id: int) -> bool:
+    return chat_id in ADMIN_CHAT_IDS
+
 def safe_cb(prefix: str, text: str) -> str:
     """Формирует callback_data ≤ 64 байт, корректно обрезая UTF-8 текст."""
     max_payload = 64 - len(prefix.encode()) - 1  # 1 байт на разделитель |
@@ -226,7 +235,7 @@ async def start_handler(message: types.Message):
         "🔸 <b>/force</b> — проверить горячие поисковые тренды из Google Trends (Россия).\n"
         "🔸 <b>/subs</b> — список тем, за которыми вы следите.\n"
         "🔸 <b>/ignored</b> — список скрытых тем (можно разблокировать).\n"
-        "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники.\n"
+        "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
         "🔸 <b>/wiki</b> — топ читаемых статей Русской Википедии за вчера.\n"
         "🔸 <b>/stop</b> — отписаться от автоматического дайджеста.\n"
         "🔸 <b>/help</b> — показать это сообщение ещё раз.",
@@ -245,7 +254,7 @@ async def help_handler(message: types.Message):
         "🔸 <b>/force</b> — принудительно получить тренды из Google Trends.\n"
         "🔸 <b>/subs</b> — просмотр и удаление отслеживаемых тем.\n"
         "🔸 <b>/ignored</b> — скрытые темы (можно разблокировать).\n"
-        "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники.\n"
+        "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
         "🔸 <b>/wiki</b> — топ читаемых статей в Русской Википедии.",
         parse_mode=ParseMode.HTML
     ))
@@ -253,6 +262,10 @@ async def help_handler(message: types.Message):
 
 @dp.message(Command("addfeed"))
 async def addfeed_handler(message: types.Message):
+    if not is_admin(message.chat.id):
+        await message.reply("⛔ Добавлять общие RSS-ленты могут только администраторы.")
+        return
+
     args = message.text.split(maxsplit=1)
     if len(args) < 2 or not args[1].startswith('http'):
         await message.reply(
@@ -263,7 +276,7 @@ async def addfeed_handler(message: types.Message):
         return
 
     url = args[1].strip()
-    await message.reply(f"🔍 <i>Проверяю RSS-ленту: {url}</i>", parse_mode=ParseMode.HTML)
+    await message.reply(f"🔍 <i>Проверяю RSS-ленту: {html_text(url)}</i>", parse_mode=ParseMode.HTML)
 
     # Валидируем в отдельном потоке
     feed = await asyncio.to_thread(feedparser.parse, url)
@@ -282,7 +295,7 @@ async def addfeed_handler(message: types.Message):
     # Проверяем, не добавлен ли уже этот URL
     for cat, urls in categories.items():
         if url in urls:
-            await message.reply(f"ℹ️ Эта лента уже есть в категории <b>{cat}</b>.", parse_mode=ParseMode.HTML)
+            await message.reply(f"ℹ️ Эта лента уже есть в категории <b>{html_text(cat)}</b>.", parse_mode=ParseMode.HTML)
             return
 
     # Сохраняем URL во временный словарь и показываем выбор категории
@@ -293,7 +306,7 @@ async def addfeed_handler(message: types.Message):
         for i, cat in enumerate(categories.keys())
     ])
     await message.reply(
-        f"✅ Лента найдена: <b>{feed_title}</b>\n"
+        f"✅ Лента найдена: <b>{html_text(feed_title)}</b>\n"
         f"Записей в ленте: {len(feed.entries)}\n\n"
         "В какую категорию добавить?",
         parse_mode=ParseMode.HTML,
@@ -304,6 +317,11 @@ async def addfeed_handler(message: types.Message):
 @dp.callback_query(lambda c: c.data and c.data.startswith('addfeed_cat|'))
 async def addfeed_cat_callback(callback_query: types.CallbackQuery):
     chat_id  = callback_query.message.chat.id
+    if not is_admin(chat_id):
+        pending_feeds.pop(chat_id, None)
+        await safe_answer_callback(callback_query, text="⛔ Недостаточно прав.", show_alert=True)
+        return
+
     cat_idx  = int(callback_query.data.split('|')[1])
     url      = pending_feeds.pop(chat_id, None)
 
@@ -321,8 +339,8 @@ async def addfeed_cat_callback(callback_query: types.CallbackQuery):
         json.dump(categories, f, ensure_ascii=False, indent=4)
 
     await bot.edit_message_text(
-        f"✅ Лента добавлена в категорию <b>{cat_name}</b>!\n"
-        f"<code>{url}</code>\n\n"
+        f"✅ Лента добавлена в категорию <b>{html_text(cat_name)}</b>!\n"
+        f"<code>{html_text(url)}</code>\n\n"
         "Она появится в следующем дайджесте.",
         chat_id=chat_id,
         message_id=callback_query.message.message_id,
@@ -404,7 +422,7 @@ async def wiki_handler(message: types.Message):
     text = "📚 <b>Топ читаемых статей Русской Википедии за вчера</b>\n\n"
     for a in articles:
         views_str = f"{a['views']:,}".replace(',', ' ')
-        text += f"{a['rank']}. <a href='{a['url']}'>{a['title']}</a> — {views_str} просмотров\n"
+        text += f"{a['rank']}. {html_link(a['url'], a['title'])} — {views_str} просмотров\n"
 
     await message.reply(text, disable_web_page_preview=True)
 
@@ -426,7 +444,7 @@ async def search_handler(message: types.Message):
         return
 
     query = args[1]
-    await message.reply(f"🔍 <i>Ищу «{query}» во всех источниках...</i>", parse_mode=ParseMode.HTML)
+    await message.reply(f"🔍 <i>Ищу «{html_text(query)}» во всех источниках...</i>", parse_mode=ParseMode.HTML)
 
     # Параллельно ищем в RSS и SearXNG
     logging.info(f"Search started: chat_id={message.chat.id}, query={query!r}")
@@ -446,7 +464,7 @@ async def search_handler(message: types.Message):
     except asyncio.TimeoutError:
         logging.exception(f"Search timed out: chat_id={message.chat.id}, query={query!r}")
         await message.reply(
-            f"⚠️ Поиск по «{query}» занял больше {SEARCH_TIMEOUT_SECONDS} секунд. "
+            f"⚠️ Поиск по «{html_text(query)}» занял больше {SEARCH_TIMEOUT_SECONDS} секунд. "
             "Часть RSS-источников не отвечает, попробуйте позже.",
             parse_mode=ParseMode.HTML
         )
@@ -454,7 +472,7 @@ async def search_handler(message: types.Message):
     except Exception as e:
         logging.exception(f"Search failed: chat_id={message.chat.id}, query={query!r}")
         await message.reply(
-            f"⚠️ Не удалось выполнить поиск по «{query}»: <code>{e}</code>",
+            f"⚠️ Не удалось выполнить поиск по «{html_text(query)}»: <code>{html_text(e)}</code>",
             parse_mode=ParseMode.HTML
         )
         return
@@ -478,16 +496,16 @@ async def search_handler(message: types.Message):
             InlineKeyboardButton(text="🔔 Уведомить, когда появится", callback_data=safe_cb("track", query))
         ]])
         await message.reply(
-            f"😔 По запросу «{query}» ничего не найдено.\n"
+            f"😔 По запросу «{html_text(query)}» ничего не найдено.\n"
             "Хотите, чтобы я уведомил вас, когда появятся новости?",
             reply_markup=markup
         )
         return
 
-    text = f"🔎 <b>Результаты по «{query}»</b>:\n\n"
+    text = f"🔎 <b>Результаты по «{html_text(query)}»</b>:\n\n"
     page_results = results[:SEARCH_PAGE_SIZE]
     for r in page_results:
-        text += f"🔹 <a href='{r['url']}'>{r['title']}</a> {r['source']}\n"
+        text += f"🔹 {html_link(r['url'], r['title'])} {html_text(r['source'])}\n"
 
     # Сохраняем сессию если есть ещё
     remaining = len(results) - SEARCH_PAGE_SIZE
@@ -524,9 +542,9 @@ async def search_next_callback(callback_query: types.CallbackQuery):
     end      = start + SEARCH_PAGE_SIZE
     page_res = results[start:end]
 
-    text = f"🔎 <b>Результаты по «{query}»</b> (стр. {page + 1}):\n\n"
+    text = f"🔎 <b>Результаты по «{html_text(query)}»</b> (стр. {page + 1}):\n\n"
     for r in page_res:
-        text += f"🔹 <a href='{r['url']}'>{r['title']}</a> {r['source']}\n"
+        text += f"🔹 {html_link(r['url'], r['title'])} {html_text(r['source'])}\n"
 
     remaining = len(results) - end
     if remaining > 0:
@@ -822,10 +840,10 @@ async def check_tracked_topics():
         if not claimed:
             continue
 
-        text = f"🔔 <b>Радар: новое по теме «{topic}»!</b>\n\n"
+        text = f"🔔 <b>Радар: новое по теме «{html_text(topic)}»!</b>\n\n"
         for _, item in claimed:
             src = item.get('source_name', '')
-            text += f"🔹 <a href='{item['link']}'>{item['title']}</a> {src}\n"
+            text += f"🔹 {html_link(item['link'], item['title'])} {html_text(src)}\n"
 
         try:
             await send_long_message(chat_id, text, disable_web_page_preview=True)
@@ -865,7 +883,7 @@ async def send_digest(force_chat_id=None, status_msg=None):
         digest = await asyncio.to_thread(rss_parser.fetch_category_digest, time_window_hours=DIGEST_WINDOW_HRS)
     except Exception as e:
         logging.error(f"RSS digest fetch error: {e}")
-        await upd(f"⚠️ Не удалось получить дайджест: <code>{e}</code>")
+        await upd(f"⚠️ Не удалось получить дайджест: <code>{html_text(e)}</code>")
         if force_chat_id and not status_msg:
             await bot.send_message(force_chat_id, "⚠️ Не удалось получить данные для дайджеста. Попробуйте позже.")
         return
@@ -902,7 +920,7 @@ async def send_digest(force_chat_id=None, status_msg=None):
         emoji = cat_emojis.get(cat_name, "📰")
         await upd(
             f"⏳ <b>Дайджест</b> — отправляю категории...\n"
-            f"{emoji} {cat_name} ({cat_idx}/{total_cats})\n"
+            f"{emoji} {html_text(cat_name)} ({cat_idx}/{total_cats})\n"
             f"📊 Найдено {total_topics} тем во всех категориях"
         )
 
@@ -916,7 +934,7 @@ async def send_digest(force_chat_id=None, status_msg=None):
             try:
                 await bot.send_message(
                     chat_id,
-                    f"{emoji} <b>Дайджест: {cat_name}</b>",
+                    f"{emoji} <b>Дайджест: {html_text(cat_name)}</b>",
                     disable_web_page_preview=True
                 )
             except Exception as e:
@@ -931,19 +949,19 @@ async def send_digest(force_chat_id=None, status_msg=None):
                     # Несколько источников: короткая шапка из ключевых слов
                     kws = searxng_client.extract_keywords(t['main_title'])
                     short_topic = ' · '.join(kws[:4]) if kws else t['main_title'][:60]
-                    topic_text = f"📌 <b>{short_topic}</b>\n"
+                    topic_text = f"📌 <b>{html_text(short_topic)}</b>\n"
                     for item in items:
                         src = item.get('source_name', '')
                         views = item.get('views', '')
                         views_str = f" — {views} пр." if views else ''
-                        topic_text += f"🔗 <a href='{item['link']}'>{item['title']}</a> {src}{views_str}\n"
+                        topic_text += f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
                 else:
                     # Один источник: просто ссылка, без повтора заголовка
                     item = items[0]
                     src = item.get('source_name', '')
                     views = item.get('views', '')
                     views_str = f" — {views} пр." if views else ''
-                    topic_text = f"🔗 <a href='{item['link']}'>{item['title']}</a> {src}{views_str}\n"
+                    topic_text = f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
 
                 markup = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="👀", callback_data=safe_cb("track", t['main_title'])),
@@ -988,7 +1006,7 @@ async def check_trends(force_send=False, force_chat_id=None, status_msg=None):
         trends = await asyncio.to_thread(trends_parser.fetch_google_trends, geo="RU")
     except Exception as e:
         logging.error(f"Google Trends fetch error: {e}")
-        await upd(f"⚠️ Не удалось получить тренды: <code>{e}</code>")
+        await upd(f"⚠️ Не удалось получить тренды: <code>{html_text(e)}</code>")
         if force_chat_id and not status_msg:
             await bot.send_message(force_chat_id, "⚠️ Не удалось получить тренды. Попробуйте позже.")
         return
@@ -1051,13 +1069,13 @@ async def check_trends(force_send=False, force_chat_id=None, status_msg=None):
     target_chats = [force_chat_id] if force_chat_id else subscribers
 
     for t in trends_to_send:
-        text = f"<b>🔥 {t['title']}</b>\n\n"
+        text = f"<b>🔥 {html_text(t['title'])}</b>\n\n"
         if t.get('traffic'):
-            text += f"🔎 <i>Более {t['traffic']} запросов</i>\n\n"
+            text += f"🔎 <i>Более {html_text(t['traffic'])} запросов</i>\n\n"
         if t.get('news'):
             text += "📰 <b>К теме:</b>\n"
             for n in t['news'][:3]:
-                text += f"🔹 <a href='{n['url']}'>{n['title']}</a>\n"
+                text += f"🔹 {html_link(n['url'], n['title'])}\n"
 
         markup = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="👀", callback_data=safe_cb("track", t['title'])),
@@ -1112,7 +1130,7 @@ async def check_stale_topics():
         try:
             await bot.send_message(
                 chat_id,
-                f"⏰ Вы всё ещё следите за «<b>{topic}</b>»?\n"
+                f"⏰ Вы всё ещё следите за «<b>{html_text(topic)}</b>»?\n"
                 f"Новостей по этой теме не было <b>{STALE_DAYS} дней</b>.",
                 reply_markup=markup
             )

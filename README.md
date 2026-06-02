@@ -11,7 +11,7 @@ Telegram-бот для отслеживания трендов, новостей
 - Ручной поиск `/search` по RSS и SearXNG.
 - Принудительная проверка Google Trends через `/force`.
 - Топ читаемых статей русской Википедии через `/wiki`.
-- Добавление RSS-лент через `/addfeed`.
+- Добавление RSS-лент администраторами через `/addfeed`.
 - Списки отслеживаемых и скрытых тем.
 
 ## Команды
@@ -25,7 +25,7 @@ Telegram-бот для отслеживания трендов, новостей
 - `/wiki` - топ читаемых статей русской Википедии за вчера.
 - `/subs` - список отслеживаемых тем.
 - `/ignored` - список скрытых тем.
-- `/addfeed URL` - добавить RSS-ленту в источники.
+- `/addfeed URL` - добавить RSS-ленту в источники (только для администраторов).
 
 ## Как работает `/search`
 
@@ -73,7 +73,9 @@ VK, OK и X/Twitter пока не подключены как отдельные
 Copy-Item .env.example .env
 ```
 
-Укажите в `.env` токен Telegram-бота и адрес SearXNG JSON API.
+Укажите в `.env` токен Telegram-бота, адрес SearXNG JSON API и личные Telegram
+`chat_id` администраторов через запятую в `ADMIN_CHAT_IDS`. Только
+администраторы могут менять общий список RSS-лент через `/addfeed`.
 
 Запуск:
 
@@ -113,7 +115,7 @@ python bot.py
 Быстрая проверка синтаксиса:
 
 ```powershell
-python -m py_compile .\bot.py .\rss_parser.py .\searxng_client.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m py_compile .\bot.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
 python -m unittest discover -s tests -v
 ```
 
