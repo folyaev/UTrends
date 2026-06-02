@@ -16,7 +16,7 @@ class FakeResponse:
 
 
 class FeedHealthTests(unittest.TestCase):
-    @patch("rss_parser.requests.get", return_value=FakeResponse())
+    @patch("rss_parser.fetch_url", return_value=FakeResponse())
     def test_check_source_health_reports_success(self, get):
         result = rss_parser.check_source_health("https://example.com/feed.xml")
         self.assertTrue(result["ok"])
@@ -24,7 +24,7 @@ class FeedHealthTests(unittest.TestCase):
         self.assertEqual(result["entries"], 1)
         get.assert_called_once()
 
-    @patch("rss_parser.requests.get", side_effect=RuntimeError("offline"))
+    @patch("rss_parser.fetch_url", side_effect=RuntimeError("offline"))
     def test_check_source_health_reports_error(self, get):
         result = rss_parser.check_source_health("https://example.com/feed.xml")
         self.assertFalse(result["ok"])

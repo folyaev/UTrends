@@ -9,10 +9,48 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from collections import defaultdict
 from config import env_int
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)
 SEARCH_MAX_WORKERS = env_int("RSS_SEARCH_MAX_WORKERS", 24)
+FETCH_RETRIES = env_int("RSS_FETCH_RETRIES", 2, minimum=0)
+FETCH_BACKOFF_SECONDS = env_int("RSS_FETCH_BACKOFF_SECONDS", 1, minimum=0)
 DEFAULT_HEADERS = {'User-Agent': 'UTrendsBot/1.0 (Telegram news aggregator)'}
+
+_HTTP_SESSION = None
+
+
+def get_http_session() -> requests.Session:
+    """Return a process-wide requests session with retry for transient RSS errors."""
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        session = requests.Session()
+        retry = Retry(
+            total=FETCH_RETRIES,
+            connect=FETCH_RETRIES,
+            read=FETCH_RETRIES,
+            status=FETCH_RETRIES,
+            backoff_factor=FETCH_BACKOFF_SECONDS,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET", "HEAD"),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _HTTP_SESSION = session
+    return _HTTP_SESSION
+
+
+def fetch_url(url: str, headers=None) -> requests.Response:
+    response = get_http_session().get(
+        url,
+        headers=headers or DEFAULT_HEADERS,
+        timeout=FETCH_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response
 
 def normalize_text(text):
     # Remove punctuation, make lowercase, split into words
@@ -48,10 +86,9 @@ def fetch_source(url):
     
     if "forbes.ru" in url:
         try:
-            html = requests.get(
+            html = fetch_url(
                 url,
                 headers={'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'},
-                timeout=FETCH_TIMEOUT_SECONDS,
             ).text
             soup = BeautifulSoup(html, 'html.parser')
             source_name = "Forbes"
@@ -84,8 +121,7 @@ def fetch_source(url):
     else:
         try:
             # Reddit требует кастомный User-Agent иначе блокирует
-            resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=FETCH_TIMEOUT_SECONDS)
-            resp.raise_for_status()
+            resp = fetch_url(url)
             feed = feedparser.parse(resp.content)
             raw_title = feed.feed.get('title', '')
             source_name = clean_source_name(raw_title, domain)
@@ -251,8 +287,7 @@ def check_source_health(url):
     """Проверяет доступность источника и возвращает короткую диагностическую запись."""
     started = time.monotonic()
     try:
-        response = requests.get(url, headers=DEFAULT_HEADERS, timeout=FETCH_TIMEOUT_SECONDS)
-        response.raise_for_status()
+        response = fetch_url(url)
         entries = None
         if "forbes.ru" not in url:
             entries = len(feedparser.parse(response.content).entries)
