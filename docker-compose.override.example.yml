@@ -1,0 +1,7 @@
+services:
+  trends-bot:
+    # Use only as a temporary local workaround for DNS issues.
+    # Resolve the current address before enabling this override:
+    # Resolve-DnsName api.telegram.org
+    extra_hosts:
+      - "api.telegram.org:REPLACE_WITH_CURRENT_IP"

@@ -1,0 +1,12 @@
+services:
+  trends-bot:
+    build: .
+    container_name: trends-bot
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - ./trends.db:/app/trends.db
+      - ./feeds.json:/app/feeds.json
