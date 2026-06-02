@@ -24,5 +24,5 @@ work before exposing the bot to untrusted users.
   deduplication.
 - Return partial `/search` results when one provider times out.
 - Add per-user source preferences instead of a single global feed list.
-- Add pagination and rate limits for expensive commands.
+- Add pagination for expensive commands that return long result sets.
 - Add dedicated adapters or RSSHub feeds for VK, OK, and X/Twitter.

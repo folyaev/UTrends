@@ -20,6 +20,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import env_int
 from feed_security import fetch_public_feed
+from rate_limit import RateLimiter
 from telegram_html import html_link, html_text
 from url_utils import normalize_article_url
 
@@ -43,6 +44,10 @@ SEARCH_TIMEOUT_SECONDS = env_int("SEARCH_TIMEOUT_SECONDS", 30)
 TELEGRAM_TIMEOUT_SECONDS = env_int("TELEGRAM_TIMEOUT_SECONDS", 30)
 FORCE_TRENDS_LIMIT     = env_int("FORCE_TRENDS_LIMIT", 5)
 RSS_FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)
+SEARCH_COOLDOWN_SECONDS  = env_int("SEARCH_COOLDOWN_SECONDS", 30)
+DIGEST_COOLDOWN_SECONDS  = env_int("DIGEST_COOLDOWN_SECONDS", 60)
+FORCE_COOLDOWN_SECONDS   = env_int("FORCE_COOLDOWN_SECONDS", 60)
+WIKI_COOLDOWN_SECONDS    = env_int("WIKI_COOLDOWN_SECONDS", 30)
 RADAR_PRIORITY_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -65,6 +70,7 @@ pending_feeds: dict[int, str] = {}
 # Пагинация поиска: chat_id -> {results, query, page}
 search_sessions: dict[int, dict] = {}
 SEARCH_PAGE_SIZE = 10
+heavy_command_limiter = RateLimiter()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан! Проверьте файл .env")
@@ -168,6 +174,13 @@ def radar_sort_key(item: dict) -> tuple[int, float]:
 
 def is_admin(chat_id: int) -> bool:
     return chat_id in ADMIN_CHAT_IDS
+
+async def enforce_rate_limit(message: types.Message, command: str, cooldown_seconds: int) -> bool:
+    retry_after = heavy_command_limiter.retry_after(message.chat.id, command, cooldown_seconds)
+    if retry_after:
+        await message.reply(f"⏳ Повторите команду через {retry_after} сек.")
+        return False
+    return True
 
 def safe_cb(prefix: str, text: str) -> str:
     """Формирует callback_data ≤ 64 байт, корректно обрезая UTF-8 текст."""
@@ -403,6 +416,9 @@ async def cancel_stop_callback(callback_query: types.CallbackQuery):
 
 @dp.message(Command("force"))
 async def force_handler(message: types.Message):
+    if not await enforce_rate_limit(message, "force", FORCE_COOLDOWN_SECONDS):
+        return
+
     status = await message.reply(
         "⏳ <i>Запрашиваю Google Trends...</i>",
         parse_mode=ParseMode.HTML
@@ -412,6 +428,9 @@ async def force_handler(message: types.Message):
 
 @dp.message(Command("wiki"))
 async def wiki_handler(message: types.Message):
+    if not await enforce_rate_limit(message, "wiki", WIKI_COOLDOWN_SECONDS):
+        return
+
     status = await message.reply("⏳ <i>Загружаю тренды Википедии за вчера...</i>", parse_mode=ParseMode.HTML)
 
     articles = await asyncio.to_thread(wiki_trends.fetch_wikipedia_trending, 'ru', 10)
@@ -438,6 +457,9 @@ async def wiki_handler(message: types.Message):
 
 @dp.message(Command("digest"))
 async def digest_handler(message: types.Message):
+    if not await enforce_rate_limit(message, "digest", DIGEST_COOLDOWN_SECONDS):
+        return
+
     status = await message.reply(
         "⏳ <i>Запускаю сбор RSS-дайджеста...</i>",
         parse_mode=ParseMode.HTML
@@ -450,6 +472,9 @@ async def search_handler(message: types.Message):
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.reply("Пожалуйста, укажите запрос. Пример: `/search apple`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if not await enforce_rate_limit(message, "search", SEARCH_COOLDOWN_SECONDS):
         return
 
     query = args[1]

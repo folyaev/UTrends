@@ -118,7 +118,7 @@ python bot.py
 Быстрая проверка синтаксиса:
 
 ```powershell
-python -m py_compile .\bot.py .\config.py .\feed_security.py .\healthcheck.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m py_compile .\bot.py .\config.py .\feed_security.py .\healthcheck.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
 python -m unittest discover -s tests -v
 ```
 
