@@ -48,6 +48,7 @@ SEARCH_COOLDOWN_SECONDS  = env_int("SEARCH_COOLDOWN_SECONDS", 30)
 DIGEST_COOLDOWN_SECONDS  = env_int("DIGEST_COOLDOWN_SECONDS", 60)
 FORCE_COOLDOWN_SECONDS   = env_int("FORCE_COOLDOWN_SECONDS", 60)
 WIKI_COOLDOWN_SECONDS    = env_int("WIKI_COOLDOWN_SECONDS", 30)
+FEEDHEALTH_COOLDOWN_SECONDS = env_int("FEEDHEALTH_COOLDOWN_SECONDS", 300)
 RADAR_PRIORITY_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -252,6 +253,7 @@ async def start_handler(message: types.Message):
         "🔸 <b>/subs</b> — список тем, за которыми вы следите.\n"
         "🔸 <b>/ignored</b> — список скрытых тем (можно разблокировать).\n"
         "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
+        "🔸 <b>/feedhealth</b> — проверить RSS-источники (для администраторов).\n"
         "🔸 <b>/wiki</b> — топ читаемых статей Русской Википедии за вчера.\n"
         "🔸 <b>/stop</b> — отписаться от автоматического дайджеста.\n"
         "🔸 <b>/help</b> — показать это сообщение ещё раз.",
@@ -271,6 +273,7 @@ async def help_handler(message: types.Message):
         "🔸 <b>/subs</b> — просмотр и удаление отслеживаемых тем.\n"
         "🔸 <b>/ignored</b> — скрытые темы (можно разблокировать).\n"
         "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
+        "🔸 <b>/feedhealth</b> — проверить RSS-источники (для администраторов).\n"
         "🔸 <b>/wiki</b> — топ читаемых статей в Русской Википедии.",
         parse_mode=ParseMode.HTML
     ))
@@ -370,6 +373,50 @@ async def addfeed_cat_callback(callback_query: types.CallbackQuery):
     )
     await safe_answer_callback(callback_query)
     logging.info(f"Added feed '{url}' to category '{cat_name}' by user {chat_id}")
+
+
+@dp.message(Command("feedhealth"))
+async def feedhealth_handler(message: types.Message):
+    if not is_admin(message.chat.id):
+        await message.reply("⛔ Проверять RSS-источники могут только администраторы.")
+        return
+    if not await enforce_rate_limit(message, "feedhealth", FEEDHEALTH_COOLDOWN_SECONDS):
+        return
+
+    status = await message.reply("⏳ <i>Проверяю RSS-источники...</i>", parse_mode=ParseMode.HTML)
+    try:
+        results = await asyncio.to_thread(rss_parser.check_all_sources, FEEDS_PATH)
+    except Exception as e:
+        await bot.edit_message_text(
+            f"⚠️ Не удалось проверить RSS-источники: <code>{html_text(e)}</code>",
+            chat_id=status.chat.id,
+            message_id=status.message_id,
+        )
+        return
+
+    failed = [item for item in results if not item['ok']]
+    successful = len(results) - len(failed)
+    text = (
+        "🩺 <b>Состояние RSS-источников</b>\n\n"
+        f"✅ Доступны: <b>{successful}</b>\n"
+        f"❌ С ошибками: <b>{len(failed)}</b>\n"
+        f"📚 Всего: <b>{len(results)}</b>"
+    )
+    if failed:
+        text += "\n\n<b>Проблемные источники:</b>\n"
+        for item in failed:
+            error = item['error'][:180]
+            text += (
+                f"\n• <b>{html_text(item['category'])}</b>\n"
+                f"<code>{html_text(item['url'])}</code>\n"
+                f"{html_text(error)}"
+            )
+
+    try:
+        await bot.delete_message(chat_id=status.chat.id, message_id=status.message_id)
+    except Exception:
+        pass
+    await send_long_message(message.chat.id, text, disable_web_page_preview=True)
 
 
 @dp.message(Command("stop"))

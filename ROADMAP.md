@@ -14,7 +14,6 @@ work before exposing the bot to untrusted users.
 
 - Process RSS sources concurrently in digest and Radar jobs, with an overall
   timeout and per-source metrics.
-- Track failing feeds and expose an administrator health report.
 - Add structured logging.
 - Define a backup and retention policy for `trends.db`.
 

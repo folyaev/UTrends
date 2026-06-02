@@ -247,6 +247,68 @@ def fetch_all_items(file_path="feeds.json", time_window_hours=3):
                     all_items.append(item)
     return all_items
 
+def check_source_health(url):
+    """Проверяет доступность источника и возвращает короткую диагностическую запись."""
+    started = time.monotonic()
+    try:
+        response = requests.get(url, headers=DEFAULT_HEADERS, timeout=FETCH_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        entries = None
+        if "forbes.ru" not in url:
+            entries = len(feedparser.parse(response.content).entries)
+        return {
+            'url': url,
+            'ok': True,
+            'status_code': response.status_code,
+            'elapsed_ms': round((time.monotonic() - started) * 1000),
+            'entries': entries,
+            'error': '',
+        }
+    except Exception as e:
+        return {
+            'url': url,
+            'ok': False,
+            'status_code': None,
+            'elapsed_ms': round((time.monotonic() - started) * 1000),
+            'entries': None,
+            'error': str(e),
+        }
+
+def check_all_sources(file_path="feeds.json"):
+    """Параллельно проверяет все настроенные RSS-источники."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        categories = json.load(f)
+
+    sources = [
+        (cat_name, url)
+        for cat_name, urls in categories.items()
+        for url in urls
+    ]
+    results = []
+    with ThreadPoolExecutor(max_workers=SEARCH_MAX_WORKERS) as executor:
+        future_to_source = {
+            executor.submit(check_source_health, url): (cat_name, url)
+            for cat_name, url in sources
+        }
+        for future in as_completed(future_to_source):
+            cat_name, url = future_to_source[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                result = {
+                    'url': url,
+                    'ok': False,
+                    'status_code': None,
+                    'elapsed_ms': 0,
+                    'entries': None,
+                    'error': str(e),
+                }
+            result['category'] = cat_name
+            results.append(result)
+
+    results.sort(key=lambda item: (item['ok'], item['category'], item['url']))
+    return results
+
 if __name__ == "__main__":
     d = fetch_category_digest()
     for cat, topics in d.items():
