@@ -19,14 +19,17 @@ from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButt
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from config import env_int
+from db_backup import create_backup
 from feed_security import fetch_public_feed
+from logging_utils import configure_logging
+from migrations import apply_migrations
 from rate_limit import RateLimiter
 from telegram_html import html_link, html_text
 from url_utils import normalize_article_url
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+configure_logging(logging.INFO)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BOT_TOKEN             = os.getenv("BOT_TOKEN")
@@ -49,6 +52,9 @@ DIGEST_COOLDOWN_SECONDS  = env_int("DIGEST_COOLDOWN_SECONDS", 60)
 FORCE_COOLDOWN_SECONDS   = env_int("FORCE_COOLDOWN_SECONDS", 60)
 WIKI_COOLDOWN_SECONDS    = env_int("WIKI_COOLDOWN_SECONDS", 30)
 FEEDHEALTH_COOLDOWN_SECONDS = env_int("FEEDHEALTH_COOLDOWN_SECONDS", 300)
+BACKUP_INTERVAL_HOURS = env_int("BACKUP_INTERVAL_HOURS", 24)
+BACKUP_RETENTION_COUNT = env_int("BACKUP_RETENTION_COUNT", 7)
+BACKUP_COOLDOWN_SECONDS = env_int("BACKUP_COOLDOWN_SECONDS", 300)
 RADAR_PRIORITY_DOMAINS = (
     "youtube.com",
     "youtu.be",
@@ -64,6 +70,7 @@ STALE_DAYS            = env_int("STALE_DAYS", 14)   # через сколько 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 DB_PATH    = os.path.join(BASE_DIR, "trends.db")
 FEEDS_PATH = os.path.join(BASE_DIR, "feeds.json")
+BACKUP_DIR = os.getenv("BACKUP_DIR", os.path.join(BASE_DIR, "backups"))
 
 # Временное хранилище URL для /addfeed (chat_id -> url)
 pending_feeds: dict[int, str] = {}
@@ -98,47 +105,11 @@ async def tg_send(coro, retries: int = 3, delay: float = 3.0):
 
 # ── DB Setup ───────────────────────────────────────────────────────────────────
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS sent_trends (
-                id TEXT PRIMARY KEY,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            CREATE TABLE IF NOT EXISTS subscribers (
-                chat_id INTEGER PRIMARY KEY
-            );
-            CREATE TABLE IF NOT EXISTS tracked_topics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                topic TEXT,
-                last_checked DATETIME DEFAULT CURRENT_TIMESTAMP,
-                stale_asked_at REAL DEFAULT NULL,
-                UNIQUE(chat_id, topic)
-            );
-            CREATE TABLE IF NOT EXISTS blocked_topics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER,
-                topic TEXT,
-                UNIQUE(chat_id, topic)
-            );
-            CREATE TABLE IF NOT EXISTS sent_articles (
-                chat_id INTEGER,
-                url     TEXT,
-                sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (chat_id, url)
-            );
-        """)
-        conn.commit()
+    applied = apply_migrations(DB_PATH)
+    if applied:
+        logging.info(f"Applied DB migrations: {applied}")
 
 init_db()
-
-# \u041c\u0438\u0433\u0440\u0430\u0446\u0438\u044f: \u0434\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u043c \u043a\u043e\u043b\u043e\u043d\u043a\u0443 \u0435\u0441\u043b\u0438 \u0431\u0430\u0437\u0430 \u0435\u0449\u0451 \u0441\u0442\u0430\u0440\u0430\u044f (\u0431\u0435\u0437 stale_asked_at)
-with sqlite3.connect(DB_PATH) as _conn:
-    try:
-        _conn.execute("ALTER TABLE tracked_topics ADD COLUMN stale_asked_at REAL DEFAULT NULL")
-        _conn.commit()
-    except Exception:
-        pass  # \u0443\u0436\u0435 \u0435\u0441\u0442\u044c
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def get_blocked(chat_id: int) -> list[str]:
@@ -254,6 +225,7 @@ async def start_handler(message: types.Message):
         "🔸 <b>/ignored</b> — список скрытых тем (можно разблокировать).\n"
         "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
         "🔸 <b>/feedhealth</b> — проверить RSS-источники (для администраторов).\n"
+        "🔸 <b>/backup</b> — создать резервную копию БД (для администраторов).\n"
         "🔸 <b>/wiki</b> — топ читаемых статей Русской Википедии за вчера.\n"
         "🔸 <b>/stop</b> — отписаться от автоматического дайджеста.\n"
         "🔸 <b>/help</b> — показать это сообщение ещё раз.",
@@ -274,6 +246,7 @@ async def help_handler(message: types.Message):
         "🔸 <b>/ignored</b> — скрытые темы (можно разблокировать).\n"
         "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
         "🔸 <b>/feedhealth</b> — проверить RSS-источники (для администраторов).\n"
+        "🔸 <b>/backup</b> — создать резервную копию БД (для администраторов).\n"
         "🔸 <b>/wiki</b> — топ читаемых статей в Русской Википедии.",
         parse_mode=ParseMode.HTML
     ))
@@ -417,6 +390,53 @@ async def feedhealth_handler(message: types.Message):
     except Exception:
         pass
     await send_long_message(message.chat.id, text, disable_web_page_preview=True)
+
+
+async def create_db_backup(reason: str = "scheduled"):
+    logging.info(f"Creating DB backup: reason={reason}")
+    backup_path = await asyncio.to_thread(
+        create_backup,
+        DB_PATH,
+        BACKUP_DIR,
+        BACKUP_RETENTION_COUNT,
+    )
+    logging.info(f"DB backup created: path={backup_path}")
+    return backup_path
+
+
+async def scheduled_db_backup():
+    try:
+        await create_db_backup(reason="scheduled")
+    except Exception as e:
+        logging.error(f"Scheduled DB backup failed: {e}")
+
+
+@dp.message(Command("backup"))
+async def backup_handler(message: types.Message):
+    if not is_admin(message.chat.id):
+        await message.reply("⛔ Создавать резервные копии могут только администраторы.")
+        return
+    if not await enforce_rate_limit(message, "backup", BACKUP_COOLDOWN_SECONDS):
+        return
+
+    status = await message.reply("⏳ <i>Создаю резервную копию базы...</i>", parse_mode=ParseMode.HTML)
+    try:
+        backup_path = await create_db_backup(reason=f"manual chat_id={message.chat.id}")
+    except Exception as e:
+        await bot.edit_message_text(
+            f"⚠️ Не удалось создать backup: <code>{html_text(e)}</code>",
+            chat_id=status.chat.id,
+            message_id=status.message_id,
+        )
+        return
+
+    await bot.edit_message_text(
+        "✅ Backup создан.\n"
+        f"<code>{html_text(os.path.basename(backup_path))}</code>",
+        chat_id=status.chat.id,
+        message_id=status.message_id,
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @dp.message(Command("stop"))
@@ -1272,6 +1292,7 @@ async def main():
     scheduler.add_job(send_digest,          'interval', hours=DIGEST_INTERVAL_HOURS,  max_instances=1)
     scheduler.add_job(check_tracked_topics, 'interval', hours=WATCHDOG_INTERVAL_HRS,  max_instances=1)
     scheduler.add_job(check_stale_topics,   'interval', hours=24,                     max_instances=1)
+    scheduler.add_job(scheduled_db_backup,  'interval', hours=BACKUP_INTERVAL_HOURS,  max_instances=1)
     scheduler.start()
 
     try:

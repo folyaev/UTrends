@@ -28,6 +28,7 @@ Telegram-бот для отслеживания трендов, новостей
 - `/ignored` - список скрытых тем.
 - `/addfeed URL` - добавить RSS-ленту в источники (только для администраторов).
 - `/feedhealth` - проверить доступность RSS-источников (только для администраторов).
+- `/backup` - создать резервную копию SQLite-базы (только для администраторов).
 
 ## Как работает `/search`
 
@@ -103,6 +104,7 @@ docker compose down
 ```
 
 `trends.db` и `feeds.json` монтируются в контейнер как volume, поэтому база и список источников сохраняются между перезапусками.
+Резервные копии базы сохраняются в `./backups`; старые копии удаляются по `BACKUP_RETENTION_COUNT`.
 
 Если в локальной сети не резолвится `api.telegram.org`, скопируйте `docker-compose.override.example.yml` в `docker-compose.override.yml` и укажите актуальный IP. Не коммитьте локальный override: IP Telegram может измениться.
 
@@ -122,7 +124,7 @@ python bot.py
 Быстрая проверка синтаксиса:
 
 ```powershell
-python -m py_compile .\bot.py .\config.py .\feed_security.py .\healthcheck.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m py_compile .\bot.py .\config.py .\db_backup.py .\feed_security.py .\healthcheck.py .\logging_utils.py .\migrations.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
 python -m unittest discover -s tests -v
 ```
 
@@ -149,15 +151,11 @@ print(len(r))
 - Добавить отдельные источники для VK, OK и X/Twitter через RSSHub или отдельные адаптеры.
 - Сделать `/search` умнее: поиск по ключевым словам, морфология, транслитерация, поддержка английского/русского вариантов.
 - Показывать пользователю частичные результаты, если RSS не успел уложиться в timeout, но SearXNG уже ответил.
-- Добавить healthcheck источников и автоматическое отключение RSS-лент, которые часто отдают 404/timeouts.
+- Добавить автоматическое отключение RSS-лент, которые часто отдают 404/timeouts.
 - Хранить статистику источников: среднее время ответа, ошибки, количество найденных материалов.
-- Добавить команду администратора для просмотра проблемных фидов.
-- Разделить настройки окон свежести и timeout-ов в `.env`.
 - Добавить приоритет видео не только в радар, но и в `/search`.
 - Добавить дедупликацию по нормализованному заголовку, а не только по URL.
 - Добавить тесты для парсинга дат SearXNG, сортировки радара и RSS-поиска.
-- Добавить миграции БД вместо ручных `ALTER TABLE`.
-- Добавить structured logging, чтобы проще разбирать долгие update-ы.
 Актуальный порядок работ перед публичным запуском находится в [ROADMAP.md](ROADMAP.md).
 
 ## Публикация на GitHub

@@ -5,7 +5,6 @@ work before exposing the bot to untrusted users.
 
 ## Required Before Public Deployment
 
-- Replace ad hoc SQLite schema changes with versioned migrations.
 - Add integration tests for Radar deduplication, scheduler jobs, callback
   ownership checks, and failed Telegram sends.
 - Rotate the Telegram bot token before the first public push.
@@ -14,8 +13,6 @@ work before exposing the bot to untrusted users.
 
 - Process RSS sources concurrently in digest and Radar jobs, with an overall
   timeout and per-source metrics.
-- Add structured logging.
-- Define a backup and retention policy for `trends.db`.
 
 ## Product Quality
 
