@@ -941,7 +941,7 @@ async def check_tracked_topics():
         if not claimed:
             continue
 
-        text = f"🔔 <b>Радар: новое по теме «{html_text(topic)}»!</b>\n\n"
+        text = f"🔔 <b>«{html_text(topic)}»</b>\n\n"
         for _, item in claimed:
             src = item.get('source_name', '')
             text += f"🔹 {html_link(item['link'], item['title'])} {html_text(src)}\n"
