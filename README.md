@@ -157,13 +157,6 @@ python -m unittest discover -s tests -v
 
 Оставшиеся задачи находятся в [ROADMAP.md](ROADMAP.md).
 
-## Чеклист перед публикацией на GitHub
-
-1. Перевыпустить Telegram-токен через BotFather.
-2. Проверить, что `git status --ignored` показывает `.env`, `*.db`, `backups/` и `venv/` как ignored.
-3. Запустить тесты и Docker build.
-4. Пушить только исходники, примеры конфигурации, документацию и тесты.
-
 ## Лицензия
 
 [MIT](LICENSE)
