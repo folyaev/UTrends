@@ -1,33 +1,35 @@
 # Roadmap
 
-UTrends is usable as a personal bot today. This roadmap tracks the next steps
-that would make it stronger for a wider public deployment.
+UTrends уже можно использовать как личного Telegram-бота. Этот roadmap фиксирует
+следующие шаги, которые сделают проект сильнее для публичного запуска и более
+широкого использования.
 
-## Before Public Deployment
+## Перед публичной публикацией
 
-- Rotate the Telegram bot token before the first public push.
-- Add integration tests for Radar deduplication, scheduler jobs, callback
-  ownership checks, and failed Telegram sends.
-- Add a short demo GIF or screenshots of `/search`, Radar, `/feedhealth`, and `/backup`.
+- Перевыпустить Telegram-токен перед первым публичным push.
+- Добавить интеграционные тесты для дедупликации радара, scheduler-задач,
+  ownership-проверок callback-ов и неуспешных Telegram-отправок.
+- Добавить короткую demo GIF или скриншоты `/search`, радара, `/feedhealth` и `/backup`.
 
-## Reliability
+## Надёжность
 
-- Process RSS sources concurrently in digest and Radar jobs, with an overall
-  timeout and per-source metrics.
-- Track feed health over time and automatically suppress sources that repeatedly
-  fail with 404/timeouts.
+- Обрабатывать RSS-источники параллельно в дайджесте и радаре с общим timeout и
+  метриками по каждому источнику.
+- Хранить историю состояния фидов и автоматически приглушать источники, которые
+  регулярно падают с 404/timeouts.
 
-## Product Quality
+## Качество продукта
 
-- Improve Russian-language matching with morphology and normalized-title
-  deduplication.
-- Return partial `/search` results when one provider times out.
-- Add per-user source preferences instead of a single global feed list.
-- Add pagination for expensive commands that return long result sets.
-- Add dedicated adapters or RSSHub feeds for VK, OK, and X/Twitter.
+- Улучшить русскоязычный matching: морфология, нормализация заголовков,
+  дедупликация по смыслу, а не только по URL.
+- Возвращать частичные результаты `/search`, если один источник успел ответить,
+  а другой упёрся в timeout.
+- Добавить пользовательские настройки источников вместо одного общего `feeds.json`.
+- Добавить пагинацию для тяжёлых команд с длинной выдачей.
+- Добавить отдельные адаптеры или RSSHub-маршруты для VK, OK и X/Twitter.
 
-## Code Quality
+## Качество кода
 
-- Split large Telegram handlers out of `bot.py` into feature modules.
-- Add typed DTOs for feed items and search results.
-- Add linting/formatting checks once the code layout stabilizes.
+- Разнести крупные Telegram handlers из `bot.py` по feature-модулям.
+- Добавить typed DTO для RSS items и search results.
+- Добавить linting/formatting проверки, когда структура кода стабилизируется.

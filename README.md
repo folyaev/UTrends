@@ -5,88 +5,88 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-MVP-orange)
 
-UTrends is a Telegram bot that watches news trends, RSS feeds, Google Trends,
-Wikipedia pageviews, and user-tracked topics. It is built as a practical
-personal radar: subscribe to a topic, get notified when fresh matching material
-appears, and keep a digest of what is moving across sources.
+UTrends — Telegram-бот для отслеживания новостных трендов, RSS-лент, Google
+Trends, популярных статей Википедии и пользовательских тем. Идея простая:
+подписаться на тему, получать уведомления о свежих совпадениях и держать под
+рукой дайджест того, что сейчас движется в источниках.
 
-The project is already packaged for Docker, has CI checks, SQLite migrations,
-backups, admin-only maintenance commands, SSRF protection for feed additions,
-Telegram HTML escaping, rate limits, structured JSON logs, and unit tests.
+Проект уже упакован для Docker, содержит CI-проверки, миграции SQLite, бэкапы,
+админские команды обслуживания, SSRF-защиту при добавлении RSS, экранирование
+Telegram HTML, rate limit, структурированные JSON-логи и unit-тесты.
 
-## Highlights
+## Возможности
 
-- Scheduled RSS digest grouped by source category.
-- Radar for tracked topics with URL deduplication and source prioritization.
-- Manual `/search` across RSS and SearXNG news results.
-- Google Trends pull via `/force`.
-- Russian Wikipedia top pageviews via `/wiki`.
-- Admin-only RSS feed management through `/addfeed`.
-- Admin-only RSS diagnostics through `/feedhealth`.
-- Admin-only SQLite backups through `/backup`.
-- Docker healthcheck and JSON logs for operational visibility.
+- Плановый RSS-дайджест по категориям источников.
+- Радар отслеживаемых тем с дедупликацией URL и приоритетом источников.
+- Ручной `/search` по RSS и SearXNG News.
+- Получение Google Trends через `/force`.
+- Топ читаемых статей русской Википедии через `/wiki`.
+- Админское добавление RSS-лент через `/addfeed`.
+- Админская диагностика RSS-источников через `/feedhealth`.
+- Админские резервные копии SQLite через `/backup`.
+- Docker healthcheck и JSON-логи для эксплуатации.
 
-## Commands
+## Команды
 
-| Command | Description |
+| Команда | Описание |
 | --- | --- |
-| `/start` | Subscribe to the scheduled digest. |
-| `/stop` | Unsubscribe from the scheduled digest. |
-| `/digest` | Build a digest manually. |
-| `/search query` | Search RSS and SearXNG news. |
-| `/force` | Pull current Google Trends. |
-| `/wiki` | Show top Russian Wikipedia articles. |
-| `/subs` | Show tracked topics. |
-| `/ignored` | Show hidden topics. |
-| `/addfeed URL` | Add an RSS feed. Admin only. |
-| `/feedhealth` | Check RSS source availability. Admin only. |
-| `/backup` | Create a SQLite backup. Admin only. |
+| `/start` | Подписаться на плановый дайджест. |
+| `/stop` | Отписаться от планового дайджеста. |
+| `/digest` | Собрать дайджест вручную. |
+| `/search запрос` | Искать по RSS и SearXNG News. |
+| `/force` | Получить текущие Google Trends. |
+| `/wiki` | Показать топ статей русской Википедии. |
+| `/subs` | Показать отслеживаемые темы. |
+| `/ignored` | Показать скрытые темы. |
+| `/addfeed URL` | Добавить RSS-ленту. Только для админов. |
+| `/feedhealth` | Проверить доступность RSS-источников. Только для админов. |
+| `/backup` | Создать резервную копию SQLite. Только для админов. |
 
-## Architecture
+## Архитектура
 
 ```text
-Telegram user
+Пользователь Telegram
    |
 aiogram bot.py
    |
-   +-- rss_parser.py       RSS fetch, digest clustering, feed health
-   +-- searxng_client.py   SearXNG news search and date parsing
+   +-- rss_parser.py       RSS, кластеризация дайджеста, healthcheck источников
+   +-- searxng_client.py   Поиск SearXNG News и парсинг дат
    +-- trends_parser.py    Google Trends RSS
-   +-- wiki_trends.py      Wikimedia pageviews API
-   +-- migrations.py       SQLite schema versions
-   +-- db_backup.py        Consistent SQLite backups
-   +-- feed_security.py    SSRF-safe feed validation
-   +-- rate_limit.py       Per-user command cooldowns
-   +-- telegram_html.py    Telegram HTML escaping helpers
+   +-- wiki_trends.py      Wikimedia Pageviews API
+   +-- migrations.py       Версии схемы SQLite
+   +-- db_backup.py        Консистентные бэкапы SQLite
+   +-- feed_security.py    SSRF-safe проверка добавляемых RSS
+   +-- rate_limit.py       Cooldown тяжёлых команд
+   +-- telegram_html.py    Экранирование Telegram HTML
    |
 trends.db + feeds.json + backups/
 ```
 
-## Production Hardening
+## Что уже сделано для production-подхода
 
-UTrends includes several safeguards that make the repository cleaner than a
-throwaway bot script:
+UTrends не выглядит как одноразовый скрипт: в проекте уже есть базовая
+инженерная защита и эксплуатационные механики.
 
-- `.env`, SQLite databases, backups, and virtual environments are ignored by Git.
-- `ADMIN_CHAT_IDS` gates commands that mutate shared state or expose diagnostics.
-- Feed additions validate every redirect and reject private, local, and reserved IP ranges.
-- RSS requests use retry/backoff for transient DNS, connection, and HTTP errors.
-- Expensive commands have per-user cooldowns.
-- URLs are normalized before Radar deduplication.
-- External titles, URLs, source names, and search queries are escaped before Telegram HTML rendering.
-- SQLite schema changes are tracked in `schema_migrations`.
-- `docker compose ps` exposes a `healthy` status.
-- Logs are emitted as JSON for easier parsing.
+- `.env`, SQLite-базы, бэкапы и виртуальные окружения исключены из Git.
+- `ADMIN_CHAT_IDS` закрывает команды, которые меняют общие данные или показывают диагностику.
+- Добавление RSS проверяет каждый редирект и запрещает private/local/reserved IP.
+- RSS-запросы используют retry/backoff для временных DNS, connection и HTTP-сбоев.
+- Тяжёлые команды имеют cooldown на пользователя.
+- URL нормализуются перед дедупликацией радара.
+- Внешние заголовки, URL, источники и поисковые запросы экранируются перед Telegram HTML.
+- Изменения схемы SQLite фиксируются в `schema_migrations`.
+- `docker compose ps` показывает статус `healthy`.
+- Логи выводятся в JSON-формате.
 
-## Quick Start
+## Быстрый запуск
 
-Create a local environment file:
+Создайте локальный `.env`:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Set at least:
+Минимально нужно указать:
 
 ```env
 BOT_TOKEN=replace_with_your_telegram_bot_token
@@ -94,44 +94,44 @@ SEARXNG_BASE_URL=http://host.docker.internal:8888
 ADMIN_CHAT_IDS=replace_with_your_telegram_chat_id
 ```
 
-Start the bot:
+Запуск:
 
 ```powershell
 docker compose up -d --build
 ```
 
-Check status and logs:
+Проверить статус и логи:
 
 ```powershell
 docker compose ps
 docker logs -f trends-bot
 ```
 
-Stop:
+Остановка:
 
 ```powershell
 docker compose down
 ```
 
-`trends.db`, `feeds.json`, and `backups/` are mounted as local volumes. Backups
-are pruned according to `BACKUP_RETENTION_COUNT`.
+`trends.db`, `feeds.json` и `backups/` монтируются как локальные volume.
+Старые бэкапы удаляются по настройке `BACKUP_RETENTION_COUNT`.
 
-## Configuration
+## Конфигурация
 
-All runtime tuning lives in `.env.example`:
+Все runtime-настройки перечислены в `.env.example`:
 
-- digest and Radar intervals;
-- freshness windows;
-- network timeouts;
-- RSS retry/backoff settings;
-- command cooldowns;
-- backup directory, interval, and retention.
+- интервалы дайджеста и радара;
+- окна свежести;
+- сетевые timeout-ы;
+- retry/backoff для RSS;
+- cooldown команд;
+- директория, интервал и retention бэкапов.
 
-If local DNS resolution for `api.telegram.org` is unstable, copy
-`docker-compose.override.example.yml` to `docker-compose.override.yml` and set
-the current Telegram API IP. Keep the override local.
+Если локальный DNS нестабилен для `api.telegram.org`, скопируйте
+`docker-compose.override.example.yml` в `docker-compose.override.yml` и укажите
+актуальный IP Telegram API. Override должен оставаться локальным.
 
-## Local Development
+## Локальная разработка
 
 ```powershell
 python -m venv venv
@@ -140,30 +140,30 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-Run checks:
+Проверки:
 
 ```powershell
 python -m py_compile .\bot.py .\config.py .\db_backup.py .\feed_security.py .\healthcheck.py .\logging_utils.py .\migrations.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
 python -m unittest discover -s tests -v
 ```
 
-## Current Limitations
+## Ограничения
 
-- RSS text matching is still simple substring matching.
-- Radar matching uses keyword overlap, not full morphology or semantic search.
-- SearXNG/Bing can return incomplete or inaccurate publication dates.
-- VK, OK, and X/Twitter are prioritized if discovered, but do not yet have dedicated adapters.
-- Public deployment should rotate the Telegram token before the first push.
+- RSS-поиск пока использует простое вхождение строки.
+- Радар использует overlap ключевых слов, а не полноценную морфологию или semantic search.
+- SearXNG/Bing может возвращать неполные или неточные даты публикации.
+- VK, OK и X/Twitter приоритизируются, если попадают в выдачу, но отдельных адаптеров пока нет.
+- Перед публичной публикацией нужно перевыпустить Telegram-токен.
 
-The remaining work is tracked in [ROADMAP.md](ROADMAP.md).
+Оставшиеся задачи находятся в [ROADMAP.md](ROADMAP.md).
 
-## GitHub Publishing Checklist
+## Чеклист перед публикацией на GitHub
 
-1. Rotate the Telegram token through BotFather before publishing.
-2. Confirm `git status --ignored` shows `.env`, `*.db`, `backups/`, and `venv/` as ignored.
-3. Run tests and Docker build.
-4. Push only source, config examples, docs, and tests.
+1. Перевыпустить Telegram-токен через BotFather.
+2. Проверить, что `git status --ignored` показывает `.env`, `*.db`, `backups/` и `venv/` как ignored.
+3. Запустить тесты и Docker build.
+4. Пушить только исходники, примеры конфигурации, документацию и тесты.
 
-## License
+## Лицензия
 
 [MIT](LICENSE)
