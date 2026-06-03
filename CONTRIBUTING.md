@@ -20,7 +20,7 @@ Fill in `BOT_TOKEN`, `SEARXNG_BASE_URL`, and `ADMIN_CHAT_IDS` in `.env`.
 Run before committing:
 
 ```powershell
-python -m py_compile .\bot.py .\config.py .\db_backup.py .\feed_security.py .\healthcheck.py .\logging_utils.py .\migrations.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\telegram_html.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m py_compile .\bot.py .\config.py .\db_backup.py .\feed_security.py .\healthcheck.py .\logging_utils.py .\migrations.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\social_feeds.py .\telegram_html.py .\text_match.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
 python -m unittest discover -s tests -v
 docker compose build
 ```

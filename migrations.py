@@ -43,9 +43,22 @@ def _migration_002_tracked_topics_stale_asked_at(conn: sqlite3.Connection) -> No
         conn.execute("ALTER TABLE tracked_topics ADD COLUMN stale_asked_at REAL DEFAULT NULL")
 
 
+def _migration_003_user_source_preferences(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_source_preferences (
+            chat_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (chat_id, category)
+        )
+    """)
+
+
 MIGRATIONS = (
     (1, "initial_schema", _migration_001_initial_schema),
     (2, "tracked_topics_stale_asked_at", _migration_002_tracked_topics_stale_asked_at),
+    (3, "user_source_preferences", _migration_003_user_source_preferences),
 )
 
 

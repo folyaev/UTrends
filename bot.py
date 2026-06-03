@@ -25,6 +25,7 @@ from logging_utils import configure_logging
 from migrations import apply_migrations
 from rate_limit import RateLimiter
 from telegram_html import html_link, html_text
+from text_match import matches_query, title_signature
 from url_utils import normalize_article_url
 
 load_dotenv()
@@ -77,7 +78,9 @@ pending_feeds: dict[int, str] = {}
 
 # Пагинация поиска: chat_id -> {results, query, page}
 search_sessions: dict[int, dict] = {}
+feedhealth_sessions: dict[int, dict] = {}
 SEARCH_PAGE_SIZE = 10
+FEEDHEALTH_PAGE_SIZE = 8
 heavy_command_limiter = RateLimiter()
 
 if not BOT_TOKEN:
@@ -147,12 +150,107 @@ def radar_sort_key(item: dict) -> tuple[int, float]:
 def is_admin(chat_id: int) -> bool:
     return chat_id in ADMIN_CHAT_IDS
 
+def load_feed_categories() -> list[str]:
+    return list(rss_parser.load_categories(FEEDS_PATH).keys())
+
+def get_enabled_categories(chat_id: int) -> set[str]:
+    categories = load_feed_categories()
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT category, enabled FROM user_source_preferences WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchall()
+    prefs = {category: bool(enabled) for category, enabled in rows}
+    return {category for category in categories if prefs.get(category, True)}
+
+def make_sources_markup(chat_id: int) -> InlineKeyboardMarkup:
+    enabled = get_enabled_categories(chat_id)
+    rows = []
+    for category in load_feed_categories():
+        mark = "✅" if category in enabled else "⬜"
+        rows.append([InlineKeyboardButton(text=f"{mark} {category}", callback_data=safe_cb("source", category))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 async def enforce_rate_limit(message: types.Message, command: str, cooldown_seconds: int) -> bool:
     retry_after = heavy_command_limiter.retry_after(message.chat.id, command, cooldown_seconds)
     if retry_after:
         await message.reply(f"⏳ Повторите команду через {retry_after} сек.")
         return False
     return True
+
+def merge_search_results(rss_raw: list[dict], searx_raw: list[dict]) -> list[dict]:
+    seen_urls: set[str] = set()
+    seen_titles: set[str] = set()
+    results: list[dict] = []
+    for r in rss_raw:
+        url = r.get('link', '')
+        url_key = normalize_article_url(url)
+        title_key = title_signature(r.get('title', ''))
+        if url_key and url_key not in seen_urls and title_key not in seen_titles:
+            seen_urls.add(url_key)
+            if title_key:
+                seen_titles.add(title_key)
+            results.append({'title': r['title'], 'url': url, 'source': r.get('source', r.get('source_name', ''))})
+    for r in searx_raw:
+        url = r.get('url', '')
+        url_key = normalize_article_url(url)
+        title_key = title_signature(r.get('title', ''))
+        if url_key and url_key not in seen_urls and title_key not in seen_titles:
+            seen_urls.add(url_key)
+            if title_key:
+                seen_titles.add(title_key)
+            results.append({'title': r['title'], 'url': url, 'source': r.get('source', 'searxng')})
+    return results
+
+def render_search_page(query: str, results: list[dict], page: int, partial_notice: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    start = page * SEARCH_PAGE_SIZE
+    end = start + SEARCH_PAGE_SIZE
+    page_results = results[start:end]
+    suffix = f" (стр. {page + 1})" if page else ""
+    text = f"🔎 <b>Результаты по «{html_text(query)}»</b>{suffix}:\n\n"
+    if partial_notice:
+        text += f"<i>{html_text(partial_notice)}</i>\n\n"
+    for r in page_results:
+        text += f"🔹 {html_link(r['url'], r['title'])} {html_text(r['source'])}\n"
+
+    remaining = len(results) - end
+    rows = [[
+        InlineKeyboardButton(text="👀", callback_data=safe_cb("track", query)),
+        InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", query)),
+    ]]
+    if remaining > 0:
+        rows.append([InlineKeyboardButton(text=f"➡️ Ещё {min(remaining, SEARCH_PAGE_SIZE)}", callback_data="search_next")])
+        text += f"\n<i>…и ещё {remaining} результатов.</i>"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+def render_feedhealth_page(results: list[dict], page: int) -> tuple[str, InlineKeyboardMarkup | None]:
+    failed = [item for item in results if not item['ok']]
+    successful = len(results) - len(failed)
+    text = (
+        "🩺 <b>Состояние RSS-источников</b>\n\n"
+        f"✅ Доступны: <b>{successful}</b>\n"
+        f"❌ С ошибками: <b>{len(failed)}</b>\n"
+        f"📚 Всего: <b>{len(results)}</b>"
+    )
+    if failed:
+        start = page * FEEDHEALTH_PAGE_SIZE
+        end = start + FEEDHEALTH_PAGE_SIZE
+        page_items = failed[start:end]
+        text += f"\n\n<b>Проблемные источники</b> (стр. {page + 1}):\n"
+        for item in page_items:
+            error = item['error'][:180]
+            text += (
+                f"\n• <b>{html_text(item['category'])}</b>\n"
+                f"<code>{html_text(item['url'])}</code>\n"
+                f"{html_text(error)}"
+            )
+        remaining = len(failed) - end
+        if remaining > 0:
+            text += f"\n\n<i>…и ещё {remaining} проблемных источников.</i>"
+            return text, InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=f"➡️ Ещё {min(remaining, FEEDHEALTH_PAGE_SIZE)}", callback_data="feedhealth_next")
+            ]])
+    return text, None
 
 def safe_cb(prefix: str, text: str) -> str:
     """Формирует callback_data ≤ 64 байт, корректно обрезая UTF-8 текст."""
@@ -223,6 +321,7 @@ async def start_handler(message: types.Message):
         "🔸 <b>/force</b> — проверить горячие поисковые тренды из Google Trends (Россия).\n"
         "🔸 <b>/subs</b> — список тем, за которыми вы следите.\n"
         "🔸 <b>/ignored</b> — список скрытых тем (можно разблокировать).\n"
+        "🔸 <b>/sources</b> — включить или отключить категории источников.\n"
         "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
         "🔸 <b>/feedhealth</b> — проверить RSS-источники (для администраторов).\n"
         "🔸 <b>/backup</b> — создать резервную копию БД (для администраторов).\n"
@@ -244,6 +343,7 @@ async def help_handler(message: types.Message):
         "🔸 <b>/force</b> — принудительно получить тренды из Google Trends.\n"
         "🔸 <b>/subs</b> — просмотр и удаление отслеживаемых тем.\n"
         "🔸 <b>/ignored</b> — скрытые темы (можно разблокировать).\n"
+        "🔸 <b>/sources</b> — категории RSS-источников.\n"
         "🔸 <b>/addfeed URL</b> — добавить RSS-ленту в источники (для администраторов).\n"
         "🔸 <b>/feedhealth</b> — проверить RSS-источники (для администраторов).\n"
         "🔸 <b>/backup</b> — создать резервную копию БД (для администраторов).\n"
@@ -367,29 +467,38 @@ async def feedhealth_handler(message: types.Message):
         )
         return
 
-    failed = [item for item in results if not item['ok']]
-    successful = len(results) - len(failed)
-    text = (
-        "🩺 <b>Состояние RSS-источников</b>\n\n"
-        f"✅ Доступны: <b>{successful}</b>\n"
-        f"❌ С ошибками: <b>{len(failed)}</b>\n"
-        f"📚 Всего: <b>{len(results)}</b>"
-    )
-    if failed:
-        text += "\n\n<b>Проблемные источники:</b>\n"
-        for item in failed:
-            error = item['error'][:180]
-            text += (
-                f"\n• <b>{html_text(item['category'])}</b>\n"
-                f"<code>{html_text(item['url'])}</code>\n"
-                f"{html_text(error)}"
-            )
-
     try:
         await bot.delete_message(chat_id=status.chat.id, message_id=status.message_id)
     except Exception:
         pass
-    await send_long_message(message.chat.id, text, disable_web_page_preview=True)
+    failed_count = sum(1 for item in results if not item['ok'])
+    if failed_count > FEEDHEALTH_PAGE_SIZE:
+        feedhealth_sessions[message.chat.id] = {'results': results, 'page': 1}
+    else:
+        feedhealth_sessions.pop(message.chat.id, None)
+    text, markup = render_feedhealth_page(results, 0)
+    await message.reply(text, disable_web_page_preview=True, reply_markup=markup)
+
+
+@dp.callback_query(lambda c: c.data == 'feedhealth_next')
+async def feedhealth_next_callback(callback_query: types.CallbackQuery):
+    chat_id = callback_query.message.chat.id
+    session = feedhealth_sessions.get(chat_id)
+    if not session:
+        await safe_answer_callback(callback_query, text="❌ Сессия истекла. Повторите /feedhealth.", show_alert=True)
+        return
+
+    page = session['page']
+    results = session['results']
+    text, markup = render_feedhealth_page(results, page)
+    failed_count = sum(1 for item in results if not item['ok'])
+    if (page + 1) * FEEDHEALTH_PAGE_SIZE < failed_count:
+        session['page'] += 1
+    else:
+        feedhealth_sessions.pop(chat_id, None)
+
+    await callback_query.message.edit_text(text, disable_web_page_preview=True, reply_markup=markup)
+    await safe_answer_callback(callback_query)
 
 
 async def create_db_backup(reason: str = "scheduled"):
@@ -547,50 +656,62 @@ async def search_handler(message: types.Message):
     query = args[1]
     await message.reply(f"🔍 <i>Ищу «{html_text(query)}» во всех источниках...</i>", parse_mode=ParseMode.HTML)
 
-    # Параллельно ищем в RSS и SearXNG
+    enabled_categories = get_enabled_categories(message.chat.id)
+
+    # Параллельно ищем в RSS и SearXNG. Если один источник зависает, показываем частичный результат.
     logging.info(f"Search started: chat_id={message.chat.id}, query={query!r}")
-    try:
-        rss_task    = asyncio.to_thread(rss_parser.search_feeds, query)
-        searx_task  = asyncio.to_thread(
+    tasks = {
+        "rss": asyncio.create_task(asyncio.to_thread(
+            rss_parser.search_feeds,
+            query,
+            FEEDS_PATH,
+            SEARCH_WINDOW_HRS,
+            enabled_categories,
+        )),
+        "searx": asyncio.create_task(asyncio.to_thread(
             searxng_client.search, query, 'news', 'ru-RU', 10, 'day', SEARCH_WINDOW_HRS
-        )
-        rss_raw, searx_raw = await asyncio.wait_for(
-            asyncio.gather(rss_task, searx_task),
-            timeout=SEARCH_TIMEOUT_SECONDS
-        )
-        logging.info(
-            f"Search finished: chat_id={message.chat.id}, query={query!r}, "
-            f"rss={len(rss_raw)}, searx={len(searx_raw)}"
-        )
-    except asyncio.TimeoutError:
-        logging.exception(f"Search timed out: chat_id={message.chat.id}, query={query!r}")
+        )),
+    }
+    done, pending = await asyncio.wait(tasks.values(), timeout=SEARCH_TIMEOUT_SECONDS)
+    for task in pending:
+        task.cancel()
+
+    rss_raw: list[dict] = []
+    searx_raw: list[dict] = []
+    failed_sources: list[str] = []
+    timed_out_sources = [name for name, task in tasks.items() if task in pending]
+    for name, task in tasks.items():
+        if task not in done:
+            continue
+        try:
+            if name == "rss":
+                rss_raw = task.result()
+            else:
+                searx_raw = task.result()
+        except Exception as e:
+            failed_sources.append(name)
+            logging.exception(f"Search source failed: chat_id={message.chat.id}, query={query!r}, source={name}, error={e}")
+
+    if not done:
         await message.reply(
             f"⚠️ Поиск по «{html_text(query)}» занял больше {SEARCH_TIMEOUT_SECONDS} секунд. "
-            "Часть RSS-источников не отвечает, попробуйте позже.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    except Exception as e:
-        logging.exception(f"Search failed: chat_id={message.chat.id}, query={query!r}")
-        await message.reply(
-            f"⚠️ Не удалось выполнить поиск по «{html_text(query)}»: <code>{html_text(e)}</code>",
-            parse_mode=ParseMode.HTML
+            "Источники не успели ответить.",
+            parse_mode=ParseMode.HTML,
         )
         return
 
-    # Объединяем: RSS первым, затем SearXNG (без дубликатов)
-    seen_urls: set[str] = set()
-    results: list[dict] = []
-    for r in rss_raw:
-        url = r.get('link', '')
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            results.append({'title': r['title'], 'url': url, 'source': r.get('source', r.get('source_name', ''))})
-    for r in searx_raw:
-        url = r.get('url', '')
-        if url and url not in seen_urls:
-            seen_urls.add(url)
-            results.append({'title': r['title'], 'url': url, 'source': r.get('source', 'searxng')})
+    logging.info(
+        f"Search finished: chat_id={message.chat.id}, query={query!r}, "
+        f"rss={len(rss_raw)}, searx={len(searx_raw)}, timeout={timed_out_sources}, failed={failed_sources}"
+    )
+
+    results = merge_search_results(rss_raw, searx_raw)
+    partial_messages = []
+    if timed_out_sources:
+        partial_messages.append("часть источников не успела ответить")
+    if failed_sources:
+        partial_messages.append("часть источников вернула ошибку")
+    partial_notice = "; ".join(partial_messages)
 
     if not results:
         markup = InlineKeyboardMarkup(inline_keyboard=[[
@@ -603,27 +724,12 @@ async def search_handler(message: types.Message):
         )
         return
 
-    text = f"🔎 <b>Результаты по «{html_text(query)}»</b>:\n\n"
-    page_results = results[:SEARCH_PAGE_SIZE]
-    for r in page_results:
-        text += f"🔹 {html_link(r['url'], r['title'])} {html_text(r['source'])}\n"
-
-    # Сохраняем сессию если есть ещё
     remaining = len(results) - SEARCH_PAGE_SIZE
     if remaining > 0:
-        search_sessions[message.chat.id] = {'results': results, 'query': query, 'page': 1}
-        text += f"\n<i>…и ещё {remaining} результатов.</i>"
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👀", callback_data=safe_cb("track", query)),
-             InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", query))],
-            [InlineKeyboardButton(text=f"➡️ Ещё {min(remaining, SEARCH_PAGE_SIZE)}", callback_data="search_next")]
-        ])
+        search_sessions[message.chat.id] = {'results': results, 'query': query, 'page': 1, 'partial_notice': partial_notice}
     else:
         search_sessions.pop(message.chat.id, None)
-        markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👀", callback_data=safe_cb("track", query)),
-            InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", query))
-        ]])
+    text, markup = render_search_page(query, results, 0, partial_notice)
 
     await message.reply(text, disable_web_page_preview=True, reply_markup=markup)
 
@@ -639,28 +745,13 @@ async def search_next_callback(callback_query: types.CallbackQuery):
     page     = session['page']
     results  = session['results']
     query    = session['query']
-    start    = page * SEARCH_PAGE_SIZE
-    end      = start + SEARCH_PAGE_SIZE
-    page_res = results[start:end]
-
-    text = f"🔎 <b>Результаты по «{html_text(query)}»</b> (стр. {page + 1}):\n\n"
-    for r in page_res:
-        text += f"🔹 {html_link(r['url'], r['title'])} {html_text(r['source'])}\n"
-
-    remaining = len(results) - end
+    partial_notice = session.get('partial_notice', '')
+    text, markup = render_search_page(query, results, page, partial_notice)
+    remaining = len(results) - ((page + 1) * SEARCH_PAGE_SIZE)
     if remaining > 0:
         session['page'] += 1
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="👀", callback_data=safe_cb("track", query)),
-             InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", query))],
-            [InlineKeyboardButton(text=f"➡️ Ещё {min(remaining, SEARCH_PAGE_SIZE)}", callback_data="search_next")]
-        ])
     else:
         search_sessions.pop(chat_id, None)
-        markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👀", callback_data=safe_cb("track", query)),
-            InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", query))
-        ]])
 
     await callback_query.message.edit_text(text, disable_web_page_preview=True, reply_markup=markup)
     await safe_answer_callback(callback_query)
@@ -798,7 +889,48 @@ async def ignored_handler(message: types.Message):
         "🙈 <b>Скрытые темы:</b>\nНажмите 👁, чтобы разблокировать.",
         parse_mode=ParseMode.HTML,
         reply_markup=make_ignored_markup(topics)
+        )
+
+
+@dp.message(Command("sources"))
+async def sources_handler(message: types.Message):
+    await message.reply(
+        "🧭 <b>Категории RSS-источников</b>\nНажмите, чтобы включить или отключить категорию.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=make_sources_markup(message.chat.id),
     )
+
+
+@dp.callback_query(lambda c: c.data and c.data.startswith('source|'))
+async def source_toggle_callback(callback_query: types.CallbackQuery):
+    chat_id = callback_query.message.chat.id
+    category = callback_query.data.split('|', 1)[1]
+    categories = load_feed_categories()
+    if category not in categories:
+        await safe_answer_callback(callback_query, text="Категория устарела. Откройте /sources заново.", show_alert=True)
+        return
+
+    enabled = get_enabled_categories(chat_id)
+    currently_enabled = category in enabled
+    if currently_enabled and len(enabled) <= 1:
+        await safe_answer_callback(callback_query, text="Нельзя отключить последнюю категорию.", show_alert=True)
+        return
+
+    new_enabled = 0 if currently_enabled else 1
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO user_source_preferences (chat_id, category, enabled, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(chat_id, category)
+            DO UPDATE SET enabled = excluded.enabled, updated_at = CURRENT_TIMESTAMP
+            """,
+            (chat_id, category, new_enabled),
+        )
+        conn.commit()
+
+    await callback_query.message.edit_reply_markup(reply_markup=make_sources_markup(chat_id))
+    await safe_answer_callback(callback_query, text="Настройки источников обновлены.")
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('unblock|'))
@@ -867,10 +999,9 @@ async def check_tracked_topics():
         min_matches = max(2, (len(keywords) + 1) // 2) if keywords else 0
 
         def matches(title: str) -> bool:
-            t = title.lower()
-            # Точная фраза — всегда ок
-            if topic_lower in t:
+            if matches_query(title, topic):
                 return True
+            t = title.lower()
             if not keywords:
                 return False
             matched = sum(1 for kw in keywords if kw in t)
@@ -880,11 +1011,13 @@ async def check_tracked_topics():
             cursor = conn.cursor()
             cursor.execute("SELECT url FROM sent_articles WHERE chat_id = ?", (chat_id,))
             sent_urls = {normalize_article_url(row[0]) for row in cursor.fetchall()}
+        enabled_categories = get_enabled_categories(chat_id)
 
         # 1. Поиск в RSS
         rss_matches = [
             item for item in items
             if normalize_article_url(item.get('link', '')) not in sent_urls
+            and item.get('category') in enabled_categories
             and item['time'] > last_checked_ts
             and matches(item['title'])
         ]
@@ -1026,6 +1159,8 @@ async def send_digest(force_chat_id=None, status_msg=None):
         )
 
         for chat_id in target_chats:
+            if cat_name not in get_enabled_categories(chat_id):
+                continue
             excluded = get_user_excluded(chat_id)
             filtered = [t for t in topics if not is_blocked(t['main_title'], excluded)]
             if not filtered:

@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from collections import defaultdict
 from config import env_int
 from requests.adapters import HTTPAdapter
+from social_feeds import build_rsshub_social_feeds
+from text_match import matches_query, title_signature, token_set, titles_similar
 from urllib3.util import Retry
 
 FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)
@@ -17,6 +19,7 @@ SEARCH_MAX_WORKERS = env_int("RSS_SEARCH_MAX_WORKERS", 24)
 FETCH_RETRIES = env_int("RSS_FETCH_RETRIES", 2, minimum=0)
 FETCH_BACKOFF_SECONDS = env_int("RSS_FETCH_BACKOFF_SECONDS", 1, minimum=0)
 DEFAULT_HEADERS = {'User-Agent': 'UTrendsBot/1.0 (Telegram news aggregator)'}
+SOCIAL_CATEGORY = "Соцсети"
 
 _HTTP_SESSION = None
 
@@ -53,11 +56,7 @@ def fetch_url(url: str, headers=None) -> requests.Response:
     return response
 
 def normalize_text(text):
-    # Remove punctuation, make lowercase, split into words
-    text = re.sub(r'[^\w\s]', '', text.lower())
-    words = set(text.split())
-    # remove short words
-    return {w for w in words if len(w) > 3}
+    return token_set(text)
 
 def parse_date(date_str):
     try:
@@ -154,18 +153,30 @@ def fetch_source(url):
         except Exception as e:
             logging.warning(f"Feed parsing error for {url}: {e}")
             
-    # keep unique titles and top latest 30 max to avoid spam
+    # keep unique normalized titles and top latest 30 max to avoid spam
     unique_items = []
     seen = set()
     for item in items:
-        if item['title'] not in seen:
-            seen.add(item['title'])
+        signature = title_signature(item['title'])
+        if signature and signature not in seen:
+            seen.add(signature)
             unique_items.append(item)
     return unique_items[:30]
 
-def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
+def load_categories(file_path="feeds.json"):
     with open(file_path, "r", encoding="utf-8") as f:
         categories = json.load(f)
+    social_feeds = build_rsshub_social_feeds()
+    if social_feeds:
+        categories = dict(categories)
+        categories.setdefault(SOCIAL_CATEGORY, [])
+        for url in social_feeds:
+            if url not in categories[SOCIAL_CATEGORY]:
+                categories[SOCIAL_CATEGORY].append(url)
+    return categories
+
+def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
+    categories = load_categories(file_path)
 
     cutoff_time = time.time() - (time_window_hours * 3600)
     digest = {}
@@ -189,7 +200,11 @@ def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
                 overlap = item['words'].intersection(cluster['words'])
                 # If they share at least 3 significant words, they are likely the same topic
                 # Or if one title is very short and shares 2 words
-                if len(overlap) >= 3 or (len(item['words']) > 0 and len(overlap) / len(item['words']) > 0.5):
+                if (
+                    len(overlap) >= 3
+                    or (len(item['words']) > 0 and len(overlap) / len(item['words']) > 0.5)
+                    or titles_similar(item['title'], cluster['main_title'])
+                ):
                     # Only add if it's from a different source
                     sources_in_cluster = {x['source_url'] for x in cluster['items']}
                     if item['source_url'] not in sources_in_cluster:
@@ -217,8 +232,9 @@ def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
             seen_titles = set()
             singles = []
             for item in all_items:
-                if item['title'] not in seen_titles:
-                    seen_titles.add(item['title'])
+                signature = title_signature(item['title'])
+                if signature and signature not in seen_titles:
+                    seen_titles.add(signature)
                     singles.append({
                         'main_title': item['title'],
                         'items': [item]
@@ -230,18 +246,18 @@ def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
 
     return digest
 
-def search_feeds(query, file_path="feeds.json", time_window_hours=48):
-    with open(file_path, "r", encoding="utf-8") as f:
-        categories = json.load(f)
+def search_feeds(query, file_path="feeds.json", time_window_hours=48, allowed_categories=None):
+    categories = load_categories(file_path)
 
     cutoff_time = time.time() - (time_window_hours * 3600)
     results = []
     
-    query_lower = query.lower()
+    allowed_categories = set(allowed_categories) if allowed_categories is not None else None
 
     feed_sources = [
         (cat_name, url)
         for cat_name, urls in categories.items()
+        if allowed_categories is None or cat_name in allowed_categories
         for url in urls
     ]
 
@@ -259,7 +275,7 @@ def search_feeds(query, file_path="feeds.json", time_window_hours=48):
                 continue
             for item in items:
                 if item['time'] > cutoff_time:
-                    if query_lower in item['title'].lower():
+                    if matches_query(item['title'], query):
                         item['category'] = cat_name
                         item['source'] = item['source_name']
                         results.append(item)
@@ -268,18 +284,21 @@ def search_feeds(query, file_path="feeds.json", time_window_hours=48):
     results.sort(key=lambda x: x['time'], reverse=True)
     return results
 
-def fetch_all_items(file_path="feeds.json", time_window_hours=3):
-    with open(file_path, "r", encoding="utf-8") as f:
-        categories = json.load(f)
+def fetch_all_items(file_path="feeds.json", time_window_hours=3, allowed_categories=None):
+    categories = load_categories(file_path)
 
     cutoff_time = time.time() - (time_window_hours * 3600)
+    allowed_categories = set(allowed_categories) if allowed_categories is not None else None
     all_items = []
 
     for cat_name, urls in categories.items():
+        if allowed_categories is not None and cat_name not in allowed_categories:
+            continue
         for url in urls:
             items = fetch_source(url)
             for item in items:
                 if item['time'] > cutoff_time:
+                    item['category'] = cat_name
                     all_items.append(item)
     return all_items
 
@@ -311,8 +330,7 @@ def check_source_health(url):
 
 def check_all_sources(file_path="feeds.json"):
     """Параллельно проверяет все настроенные RSS-источники."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        categories = json.load(f)
+    categories = load_categories(file_path)
 
     sources = [
         (cat_name, url)
