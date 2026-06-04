@@ -22,7 +22,7 @@ from .logging_utils import configure_logging
 from .migrations import apply_migrations
 from .rate_limit import RateLimiter
 from .telegram_html import html_link, html_text
-from .text_match import matches_query, title_signature
+from .text_match import matches_query, title_signature, tracked_topic_matches
 from .time_window import format_window, parse_window_arg as parse_time_window_arg
 from .url_utils import normalize_article_url
 
@@ -899,7 +899,7 @@ async def wiki_handler(message: types.Message):
     text = "📚 <b>Топ читаемых статей Русской Википедии за вчера</b>\n\n"
     for a in articles:
         views_str = f"{a['views']:,}".replace(',', ' ')
-        text += f"{a['rank']}. {html_link(a['url'], a['title'])} — {views_str} просмотров\n"
+        text += f"{html_link(a['url'], a['title'])} — {views_str}\n"
 
     await message.reply(text, disable_web_page_preview=True)
 
@@ -1309,21 +1309,11 @@ async def check_tracked_topics():
         except (TypeError, ValueError):
             last_checked_ts = now - WATCHDOG_WINDOW_HRS * 3600
 
-        # Извлекаем ключевые слова для более точного поиска
+        # Извлекаем ключевые слова для внешнего поиска.
         keywords = searxng_client.extract_keywords(topic)
-        topic_lower = topic.lower()
-
-        # Требуем чтобы совпало хотя бы половина ключевых слов (мин. 2)
-        min_matches = max(2, (len(keywords) + 1) // 2) if keywords else 0
 
         def matches(title: str) -> bool:
-            if matches_query(title, topic):
-                return True
-            t = title.lower()
-            if not keywords:
-                return False
-            matched = sum(1 for kw in keywords if kw in t)
-            return matched >= min_matches
+            return tracked_topic_matches(title, topic)
 
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
@@ -1392,7 +1382,7 @@ async def check_tracked_topics():
         if not claimed:
             continue
 
-        text = f"🔔 <b>«{html_text(topic)}»</b>\n\n"
+        text = f"🔔 <b>{html_text(topic)}</b>\n\n"
         for _, item in claimed:
             src = item.get('source_name', '')
             text += f"🔹 {html_link(item['link'], item['title'])} {html_text(src)}\n"

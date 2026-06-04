@@ -61,6 +61,7 @@ def load_bloggers(file_path: str = "bloggers.json") -> list[dict]:
             "language": str(channel.get("language") or "").strip(),
             "region_focus": str(channel.get("region_focus") or "").strip(),
             "parser_priority": int(channel.get("parser_priority") or 2),
+            "banned_ru": bool(channel.get("banned_ru", False)),
         }
         for channel in channels
         if isinstance(channel, dict) and channel.get("url")

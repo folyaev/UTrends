@@ -27,7 +27,10 @@ class BloggerDigestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bloggers.json"
             path.write_text(
-                '{"channels":[{"name":"Channel","url":"https://example.com/feed","parser_priority":1}]}',
+                (
+                    '{"channels":[{"name":"Channel","url":"https://example.com/feed",'
+                    '"parser_priority":1,"banned_ru":true}]}'
+                ),
                 encoding="utf-8",
             )
 
@@ -37,6 +40,7 @@ class BloggerDigestTests(unittest.TestCase):
         self.assertEqual(channels[0]["url"], "https://example.com/feed")
         self.assertEqual(channels[0]["platform"], "youtube")
         self.assertEqual(channels[0]["parser_priority"], 1)
+        self.assertTrue(channels[0]["banned_ru"])
 
     def test_split_title_topics_removes_channel_suffix_and_splits(self):
         self.assertEqual(

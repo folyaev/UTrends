@@ -1,6 +1,11 @@
 import unittest
 
-from utrends.text_match import matches_query, title_signature, titles_similar
+from utrends.text_match import (
+    matches_query,
+    title_signature,
+    titles_similar,
+    tracked_topic_matches,
+)
 
 
 class TextMatchTests(unittest.TestCase):
@@ -22,6 +27,38 @@ class TextMatchTests(unittest.TestCase):
         self.assertEqual(
             title_signature("Max пропал из App Store"),
             title_signature("App Store: пропал Max"),
+        )
+
+    def test_tracked_topic_rejects_weak_common_overlap(self):
+        self.assertFalse(
+            tracked_topic_matches(
+                "Apple touts $1.4 trillion in App Store billings and sales",
+                "макс удалили из app store",
+            )
+        )
+
+    def test_tracked_topic_accepts_strong_overlap(self):
+        self.assertTrue(
+            tracked_topic_matches(
+                "Мессенджер Макс удалили из App Store",
+                "макс удалили из app store",
+            )
+        )
+
+    def test_tracked_topic_matches_max_alias(self):
+        self.assertTrue(
+            tracked_topic_matches(
+                "Финуслуги интегрировали сервис в экосистему мессенджера Макс",
+                "Мессенджер MAX",
+            )
+        )
+
+    def test_tracked_topic_rejects_generic_putin_overlap(self):
+        self.assertFalse(
+            tracked_topic_matches(
+                "Путин не планирует встречаться с делегацией США на ПМЭФ",
+                "Путин заявил, что от Украины не",
+            )
         )
 
 
