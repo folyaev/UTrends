@@ -1,0 +1,11 @@
+{
+    "Technology": [
+        "https://example.com/technology/rss.xml"
+    ],
+    "Business": [
+        "https://example.com/business/rss.xml"
+    ],
+    "World News": [
+        "https://example.com/world/rss.xml"
+    ]
+}

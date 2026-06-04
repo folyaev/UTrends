@@ -8,6 +8,12 @@
 *.sqlite3
 backups/
 
+# Private source lists / local research notes
+feeds.json
+bloggers.json
+news_channels.json
+news_video_trends_parser_codex.md
+
 # Python
 __pycache__/
 *.py[cod]

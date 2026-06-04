@@ -55,10 +55,22 @@ def _migration_003_user_source_preferences(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_004_digest_seen_articles(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS digest_seen_articles (
+            chat_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (chat_id, url)
+        )
+    """)
+
+
 MIGRATIONS = (
     (1, "initial_schema", _migration_001_initial_schema),
     (2, "tracked_topics_stale_asked_at", _migration_002_tracked_topics_stale_asked_at),
     (3, "user_source_preferences", _migration_003_user_source_preferences),
+    (4, "digest_seen_articles", _migration_004_digest_seen_articles),
 )
 
 

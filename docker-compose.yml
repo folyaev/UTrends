@@ -16,4 +16,6 @@ services:
     volumes:
       - ./trends.db:/app/trends.db
       - ./feeds.json:/app/feeds.json
+      - ./bloggers.json:/app/bloggers.json
+      - ./news_channels.json:/app/news_channels.json
       - ./backups:/app/backups

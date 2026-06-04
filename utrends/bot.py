@@ -14,7 +14,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from . import rss_parser, searxng_client, trends_parser, wiki_trends
+from . import blogger_digest, rss_parser, searxng_client, trends_parser, wiki_trends
 from .config import env_int
 from .db_backup import create_backup
 from .feed_security import fetch_public_feed
@@ -23,6 +23,7 @@ from .migrations import apply_migrations
 from .rate_limit import RateLimiter
 from .telegram_html import html_link, html_text
 from .text_match import matches_query, title_signature
+from .time_window import format_window, parse_window_arg as parse_time_window_arg
 from .url_utils import normalize_article_url
 
 load_dotenv()
@@ -40,6 +41,7 @@ DIGEST_INTERVAL_HOURS  = env_int("DIGEST_INTERVAL_HOURS", 6)
 WATCHDOG_INTERVAL_HRS  = env_int("WATCHDOG_INTERVAL_HOURS", 1)
 WATCHDOG_WINDOW_HRS    = env_int("WATCHDOG_WINDOW_HOURS", 2)
 DIGEST_WINDOW_HRS      = env_int("DIGEST_WINDOW_HOURS", 24)
+MAX_DIGEST_WINDOW_HRS  = env_int("MAX_DIGEST_WINDOW_HOURS", 168, minimum=1)
 SEARCH_WINDOW_HRS      = env_int("SEARCH_WINDOW_HOURS", 48)
 SEARCH_TIMEOUT_SECONDS = env_int("SEARCH_TIMEOUT_SECONDS", 30)
 TELEGRAM_TIMEOUT_SECONDS = env_int("TELEGRAM_TIMEOUT_SECONDS", 30)
@@ -69,6 +71,8 @@ PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR   = os.path.dirname(PACKAGE_DIR)
 DB_PATH    = os.path.join(BASE_DIR, "trends.db")
 FEEDS_PATH = os.path.join(BASE_DIR, "feeds.json")
+BLOGGERS_PATH = os.path.join(BASE_DIR, "bloggers.json")
+NEWS_CHANNELS_PATH = os.path.join(BASE_DIR, "news_channels.json")
 BACKUP_DIR = os.getenv("BACKUP_DIR", os.path.join(BASE_DIR, "backups"))
 
 # Временное хранилище URL для /addfeed (chat_id -> url)
@@ -79,6 +83,12 @@ search_sessions: dict[int, dict] = {}
 feedhealth_sessions: dict[int, dict] = {}
 SEARCH_PAGE_SIZE = 10
 FEEDHEALTH_PAGE_SIZE = 8
+BLOGGER_REPEATED_TOPIC_LIMIT = env_int("BLOGGER_REPEATED_TOPIC_LIMIT", 3, minimum=1)
+BLOGGER_EXAMPLES_PER_TOPIC = env_int("BLOGGER_EXAMPLES_PER_TOPIC", 2, minimum=1)
+BLOGGER_LATEST_LIMIT = env_int("BLOGGER_LATEST_LIMIT", 5, minimum=0)
+BLOGGER_SINGLE_TOPIC_LIMIT = env_int("BLOGGER_SINGLE_TOPIC_LIMIT", 5, minimum=0)
+BLOGGER_SNIPPET_CHARS = env_int("BLOGGER_SNIPPET_CHARS", 90, minimum=0)
+BLOGGER_CHAPTERS_PER_EXAMPLE = env_int("BLOGGER_CHAPTERS_PER_EXAMPLE", 2, minimum=0)
 heavy_command_limiter = RateLimiter()
 
 if not BOT_TOKEN:
@@ -161,6 +171,111 @@ def get_enabled_categories(chat_id: int) -> set[str]:
     prefs = {category: bool(enabled) for category, enabled in rows}
     return {category for category in categories if prefs.get(category, True)}
 
+def get_digest_seen_urls(chat_id: int) -> set[str]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT url FROM digest_seen_articles WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+def mark_digest_seen(chat_id: int, urls: list[str]) -> None:
+    normalized = sorted({normalize_article_url(url) for url in urls if normalize_article_url(url)})
+    if not normalized:
+        return
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO digest_seen_articles (chat_id, url) VALUES (?, ?)",
+            [(chat_id, url) for url in normalized],
+        )
+        conn.commit()
+
+def item_digest_url(item: dict) -> str:
+    return normalize_article_url(item.get('link') or item.get('url') or '')
+
+def filter_digest_topics_for_fresh(topics: list[dict], seen_urls: set[str]) -> list[dict]:
+    fresh_topics = []
+    for topic in topics:
+        fresh_items = [
+            item for item in topic.get('items', [])
+            if item_digest_url(item) and item_digest_url(item) not in seen_urls
+        ]
+        if not fresh_items:
+            continue
+        fresh_topic = dict(topic)
+        fresh_topic['items'] = fresh_items
+        fresh_topics.append(fresh_topic)
+    return fresh_topics
+
+def collect_topic_urls(topic: dict) -> list[str]:
+    return [item.get('link') or item.get('url') or '' for item in topic.get('items', [])]
+
+def filter_blogger_digest_for_fresh(digest: dict, seen_urls: set[str]) -> dict:
+    def fresh_clusters(clusters: list[dict], require_repeated: bool) -> list[dict]:
+        result = []
+        for cluster in clusters:
+            fresh_items = [
+                item for item in cluster.get("items", [])
+                if item_digest_url(item) and item_digest_url(item) not in seen_urls
+            ]
+            if not fresh_items:
+                continue
+            channels = {item.get("channel") for item in fresh_items if item.get("channel")}
+            fresh_cluster = dict(cluster)
+            fresh_cluster["items"] = fresh_items
+            fresh_cluster["channel_count"] = len(channels)
+            fresh_cluster["item_count"] = len(fresh_items)
+            fresh_cluster["video_count"] = len({
+                item.get("video_url") or item_digest_url(item)
+                for item in fresh_items
+                if item.get("video_url") or item_digest_url(item)
+            })
+            fresh_cluster["is_repeated"] = fresh_cluster["channel_count"] > 1 or fresh_cluster["video_count"] > 1
+            if require_repeated and not fresh_cluster["is_repeated"]:
+                continue
+            result.append(fresh_cluster)
+        return result
+
+    fresh_videos = [
+        item for item in digest.get("videos", [])
+        if item_digest_url(item) and item_digest_url(item) not in seen_urls
+    ]
+    fresh_latest = [
+        item for item in digest.get("latest", [])
+        if item_digest_url(item) and item_digest_url(item) not in seen_urls
+    ]
+    fresh_repeated = []
+    for cluster in digest.get("repeated", []):
+        fresh_items = [
+            item for item in cluster.get("items", [])
+            if item_digest_url(item) and item_digest_url(item) not in seen_urls
+        ]
+        channels = {item.get("channel") for item in fresh_items if item.get("channel")}
+        if len(channels) < 2:
+            continue
+        fresh_cluster = dict(cluster)
+        fresh_cluster["items"] = fresh_items
+        fresh_cluster["channel_count"] = len(channels)
+        fresh_cluster["item_count"] = len(fresh_items)
+        fresh_repeated.append(fresh_cluster)
+    topic_clusters = fresh_clusters(digest.get("topic_clusters", []), require_repeated=False)
+    repeated_topics = [cluster for cluster in topic_clusters if cluster.get("is_repeated")]
+    single_topics = [cluster for cluster in topic_clusters if not cluster.get("is_repeated")]
+    return {
+        "videos": fresh_videos,
+        "repeated": fresh_repeated,
+        "topic_clusters": topic_clusters,
+        "repeated_topics": repeated_topics,
+        "single_topics": single_topics,
+        "latest": fresh_latest,
+    }
+
+def collect_blogger_urls(digest: dict) -> list[str]:
+    urls = []
+    for item in digest.get("videos", []):
+        urls.append(item.get("link") or item.get("url") or "")
+    return urls
+
 def make_sources_markup(chat_id: int) -> InlineKeyboardMarkup:
     enabled = get_enabled_categories(chat_id)
     rows = []
@@ -175,6 +290,10 @@ async def enforce_rate_limit(message: types.Message, command: str, cooldown_seco
         await message.reply(f"⏳ Повторите команду через {retry_after} сек.")
         return False
     return True
+
+def parse_window_arg(text: str | None) -> tuple[int | None, str | None]:
+    return parse_time_window_arg(text, DIGEST_WINDOW_HRS, MAX_DIGEST_WINDOW_HRS)
+
 
 def merge_search_results(rss_raw: list[dict], searx_raw: list[dict]) -> list[dict]:
     seen_urls: set[str] = set()
@@ -250,6 +369,86 @@ def render_feedhealth_page(results: list[dict], page: int) -> tuple[str, InlineK
             ]])
     return text, None
 
+
+def render_blogger_digest(
+    digest: dict,
+    title: str = "Блогеры и YouTube-каналы",
+    include_latest: bool = True,
+    include_single_topics: bool = True,
+) -> str:
+    repeated = digest.get("repeated_topics") or digest.get("repeated", [])
+    single_topics = digest.get("single_topics", [])
+    latest = digest.get("latest", [])
+    total = len(digest.get("videos", []))
+    text = (
+        f"🎥 <b>{html_text(title)}</b>\n\n"
+        f"📊 Свежих видео: <b>{total}</b>\n"
+    )
+
+    if repeated:
+        text += "\n🔥 <b>Повторяющиеся темы</b>\n"
+        for idx, cluster in enumerate(repeated[:BLOGGER_REPEATED_TOPIC_LIMIT], 1):
+            text += (
+                f"\n{idx}. <b>{html_text(cluster['main_title'])}</b>\n"
+                f"Каналов: <b>{cluster['channel_count']}</b>, видео: <b>{cluster['item_count']}</b>\n"
+            )
+            for item_idx, item in enumerate(cluster["items"][:BLOGGER_EXAMPLES_PER_TOPIC]):
+                timecodes_text = f" ⏱ {html_text(item['start_time'])}" if item.get("start_time") else ""
+                link_title = item.get("video_title") or item.get("title") or cluster["main_title"]
+                text += (
+                    f"🔗 {html_link(item['link'], link_title)} "
+                    f"{html_text(item['channel'])}{timecodes_text}\n"
+                )
+                chapters = item.get("chapters") or []
+                if item_idx == 0 and BLOGGER_CHAPTERS_PER_EXAMPLE and chapters:
+                    chapter_bits = [
+                        f"{chapter['start_time']} {chapter['title']}"
+                        for chapter in chapters[:BLOGGER_CHAPTERS_PER_EXAMPLE]
+                    ]
+                    text += f"<i>{html_text(' / '.join(chapter_bits))}</i>\n"
+                elif item_idx == 0 and BLOGGER_SNIPPET_CHARS and item.get("description_snippet"):
+                    snippet = item["description_snippet"][:BLOGGER_SNIPPET_CHARS].rstrip()
+                    if len(item["description_snippet"]) > BLOGGER_SNIPPET_CHARS:
+                        snippet += "..."
+                    text += f"<i>{html_text(snippet)}</i>\n"
+            hidden_items = max(0, cluster.get("item_count", 0) - BLOGGER_EXAMPLES_PER_TOPIC)
+            if hidden_items:
+                text += f"<i>...ещё {hidden_items} видео по теме</i>\n"
+        hidden_topics = len(repeated) - BLOGGER_REPEATED_TOPIC_LIMIT
+        if hidden_topics > 0:
+            text += f"\n<i>...и ещё {hidden_topics} повторяющихся тем.</i>\n"
+    else:
+        text += "\n🔥 Повторяющихся тем за окно дайджеста не найдено.\n"
+
+    if include_single_topics and single_topics and BLOGGER_SINGLE_TOPIC_LIMIT:
+        text += "\n▫️ <b>Одиночные темы</b>\n"
+        for cluster in single_topics[:BLOGGER_SINGLE_TOPIC_LIMIT]:
+            item = cluster["items"][0]
+            timecodes_text = f" ⏱ {html_text(item['start_time'])}" if item.get("start_time") else ""
+            link_title = item.get("video_title") or item.get("title") or cluster["main_title"]
+            text += (
+                f"• <b>{html_text(cluster['main_title'])}</b> — "
+                f"{html_link(item['link'], link_title)} "
+                f"{html_text(item.get('channel', ''))}{timecodes_text}\n"
+            )
+        hidden_single = len(single_topics) - BLOGGER_SINGLE_TOPIC_LIMIT
+        if hidden_single > 0:
+            text += f"<i>...и ещё {hidden_single} одиночных тем.</i>\n"
+
+    if include_latest and latest and BLOGGER_LATEST_LIMIT:
+        text += "\n🆕 <b>Что вышло</b>\n"
+        for item in latest[:BLOGGER_LATEST_LIMIT]:
+            timecodes = item.get("timecodes") or []
+            timecodes_text = f" ⏱ {html_text(', '.join(timecodes[:2]))}" if timecodes else ""
+            text += (
+                f"🔹 {html_link(item['link'], item['title'])} "
+                f"{html_text(item['channel'])}{timecodes_text}\n"
+            )
+        hidden_latest = len(latest) - BLOGGER_LATEST_LIMIT
+        if hidden_latest > 0:
+            text += f"<i>...и ещё {hidden_latest} свежих видео.</i>\n"
+    return text
+
 def safe_cb(prefix: str, text: str) -> str:
     """Формирует callback_data ≤ 64 байт, корректно обрезая UTF-8 текст."""
     max_payload = 64 - len(prefix.encode()) - 1  # 1 байт на разделитель |
@@ -294,6 +493,70 @@ async def send_long_message(chat_id: int, text: str, **kwargs) -> None:
         if len(parts) > 1 and i < len(parts) - 1:
             await asyncio.sleep(0.3)
 
+async def send_video_stats(
+    chat_id: int,
+    status_msg,
+    file_path: str,
+    title: str,
+    window_hours: int,
+    include_single_topics: bool,
+    include_latest: bool = False,
+    require_repeated: bool = False,
+) -> None:
+    if not os.path.exists(file_path):
+        await bot.edit_message_text(
+            f"⚠️ Файл источников не найден: <code>{html_text(os.path.basename(file_path))}</code>",
+            chat_id=status_msg.chat.id,
+            message_id=status_msg.message_id,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        digest = await asyncio.to_thread(
+            blogger_digest.build_blogger_digest,
+            file_path,
+            window_hours,
+        )
+    except Exception as e:
+        logging.error(f"Video stats fetch error for {file_path}: {e}")
+        await bot.edit_message_text(
+            f"⚠️ Не удалось собрать статистику: <code>{html_text(e)}</code>",
+            chat_id=status_msg.chat.id,
+            message_id=status_msg.message_id,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if not digest.get("videos"):
+        await bot.edit_message_text(
+            "ℹ️ За текущее окно видео не найдено.",
+            chat_id=status_msg.chat.id,
+            message_id=status_msg.message_id,
+        )
+        return
+
+    repeated_topics = digest.get("repeated_topics") or digest.get("repeated")
+    if require_repeated and not repeated_topics:
+        await bot.edit_message_text(
+            "ℹ️ Повторяющихся тем за текущее окно не найдено.",
+            chat_id=status_msg.chat.id,
+            message_id=status_msg.message_id,
+        )
+        return
+
+    text = render_blogger_digest(
+        digest,
+        title=f"{title} за {format_window(window_hours)}",
+        include_latest=include_latest,
+        include_single_topics=include_single_topics,
+    )
+    try:
+        await bot.delete_message(chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+    except Exception:
+        pass
+    await send_long_message(chat_id, text, disable_web_page_preview=True)
+
 async def safe_answer_callback(callback_query: types.CallbackQuery, *args, **kwargs) -> None:
     try:
         await bot.answer_callback_query(callback_query.id, *args, **kwargs)
@@ -304,6 +567,14 @@ async def safe_answer_callback(callback_query: types.CallbackQuery, *args, **kwa
         raise
 
 # ── Handlers ───────────────────────────────────────────────────────────────────
+@dp.errors()
+async def telegram_error_handler(event: types.ErrorEvent) -> bool:
+    if isinstance(event.exception, TelegramNetworkError):
+        logging.warning(f"Telegram API network error while processing update: {event.exception}")
+        return True
+    return False
+
+
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     with sqlite3.connect(DB_PATH) as conn:
@@ -314,7 +585,9 @@ async def start_handler(message: types.Message):
         "Привет! Я твой личный трекер трендов и новостей из RSS-лент! 📰\n\n"
         "Вот что я умею:\n"
         f"🔸 Каждые {DIGEST_INTERVAL_HOURS} часов буду присылать <b>Сводный Дайджест</b> самых обсуждаемых тем.\n"
-        "🔸 <b>/digest</b> — собрать и прислать свежий дайджест прямо сейчас.\n"
+        "🔸 <b>/digest</b> или <b>/digest 3d</b> — собрать дайджест за окно.\n"
+        "🔸 <b>/fresh</b> или <b>/fresh 12h</b> — только новое во fresh-дайджестах.\n"
+        "🔸 <b>/bloggers</b> или <b>/bloggers 6d</b> — статистика тем у блогеров.\n"
         "🔸 <b>/search запрос</b> — поиск по всем источникам за последние 48 часов.\n"
         "🔸 <b>/force</b> — проверить горячие поисковые тренды из Google Trends (Россия).\n"
         "🔸 <b>/subs</b> — список тем, за которыми вы следите.\n"
@@ -336,7 +609,9 @@ async def help_handler(message: types.Message):
         "📖 <b>Список команд:</b>\n\n"
         "🔸 <b>/start</b> — подписаться на дайджест.\n"
         "🔸 <b>/stop</b> — отписаться от автоматического дайджеста.\n"
-        f"🔸 <b>/digest</b> — дайджест за последние {DIGEST_WINDOW_HRS} часов прямо сейчас.\n"
+        f"🔸 <b>/digest</b> — дайджест за последние {DIGEST_WINDOW_HRS} часов. Можно: <code>/digest 3d</code>.\n"
+        "🔸 <b>/fresh</b> — только новое во fresh-дайджестах. Можно: <code>/fresh 12h</code>.\n"
+        "🔸 <b>/bloggers</b> — статистика тем у блогеров. Можно: <code>/bloggers 6d</code>.\n"
         "🔸 <b>/search запрос</b> — поиск по RSS-лентам за последние 48 часов.\n"
         "🔸 <b>/force</b> — принудительно получить тренды из Google Trends.\n"
         "🔸 <b>/subs</b> — просмотр и удаление отслеживаемых тем.\n"
@@ -631,14 +906,59 @@ async def wiki_handler(message: types.Message):
 
 @dp.message(Command("digest"))
 async def digest_handler(message: types.Message):
+    window_hours, error = parse_window_arg(message.text)
+    if error:
+        await message.reply(f"⚠️ {error}")
+        return
     if not await enforce_rate_limit(message, "digest", DIGEST_COOLDOWN_SECONDS):
         return
 
     status = await message.reply(
-        "⏳ <i>Запускаю сбор RSS-дайджеста...</i>",
+        f"⏳ <i>Запускаю сбор RSS-дайджеста за {format_window(window_hours)}...</i>",
         parse_mode=ParseMode.HTML
     )
-    asyncio.create_task(send_digest(force_chat_id=message.chat.id, status_msg=status))
+    asyncio.create_task(send_digest(force_chat_id=message.chat.id, status_msg=status, window_hours=window_hours))
+
+
+@dp.message(Command("bloggers"))
+async def bloggers_handler(message: types.Message):
+    window_hours, error = parse_window_arg(message.text)
+    if error:
+        await message.reply(f"⚠️ {error}")
+        return
+    if not await enforce_rate_limit(message, "bloggers", DIGEST_COOLDOWN_SECONDS):
+        return
+
+    status = await message.reply(
+        f"⏳ <i>Собираю статистику тем у блогеров за {format_window(window_hours)}...</i>",
+        parse_mode=ParseMode.HTML
+    )
+    asyncio.create_task(send_video_stats(
+        message.chat.id,
+        status,
+        BLOGGERS_PATH,
+        "Блогеры: статистика тем",
+        window_hours,
+        include_single_topics=True,
+        include_latest=False,
+        require_repeated=False,
+    ))
+
+
+@dp.message(Command("fresh"))
+async def fresh_handler(message: types.Message):
+    window_hours, error = parse_window_arg(message.text)
+    if error:
+        await message.reply(f"⚠️ {error}")
+        return
+    if not await enforce_rate_limit(message, "fresh", DIGEST_COOLDOWN_SECONDS):
+        return
+
+    status = await message.reply(
+        f"⏳ <i>Ищу новое за {format_window(window_hours)}, чего ещё не было во fresh-дайджестах...</i>",
+        parse_mode=ParseMode.HTML
+    )
+    asyncio.create_task(send_digest(force_chat_id=message.chat.id, status_msg=status, fresh_only=True, window_hours=window_hours))
 
 
 @dp.message(Command("search"))
@@ -1095,7 +1415,7 @@ async def check_tracked_topics():
             conn.commit()
 
 
-async def send_digest(force_chat_id=None, status_msg=None):
+async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = False, window_hours: int = DIGEST_WINDOW_HRS):
     logging.info("Generating RSS Digest...")
 
     async def upd(text: str):
@@ -1109,10 +1429,11 @@ async def send_digest(force_chat_id=None, status_msg=None):
             except Exception:
                 pass
 
-    await upd("⏳ <i>Загружаю RSS-ленты... Это займёт 15–30 секунд.</i>")
+    mode_label = "fresh-дайджест" if fresh_only else "RSS-дайджест"
+    await upd(f"⏳ <i>Загружаю {mode_label} за {format_window(window_hours)}... Это займёт 15–30 секунд.</i>")
 
     try:
-        digest = await asyncio.to_thread(rss_parser.fetch_category_digest, time_window_hours=DIGEST_WINDOW_HRS)
+        digest = await asyncio.to_thread(rss_parser.fetch_category_digest, time_window_hours=window_hours)
     except Exception as e:
         logging.error(f"RSS digest fetch error: {e}")
         await upd(f"⚠️ Не удалось получить дайджест: <code>{html_text(e)}</code>")
@@ -1129,89 +1450,170 @@ async def send_digest(force_chat_id=None, status_msg=None):
         return
 
     target_chats = [force_chat_id] if force_chat_id else subscribers
+    sent_any = {chat_id: False for chat_id in target_chats}
 
     if not digest:
         await upd("ℹ️ Нет пересечений в новостях для дайджеста.")
         if not status_msg:
             for chat_id in target_chats:
                 await bot.send_message(chat_id, "ℹ️ На данный момент нет явных пересечений в новостях для дайджеста.")
-        return
+    else:
+        total_cats   = len(digest)
+        total_topics = sum(len(v) for v in digest.values())
 
-    total_cats   = len(digest)
-    total_topics = sum(len(v) for v in digest.values())
+        cat_emojis = {
+            "Технологии и Игры":   "🕹",
+            "Экономика и Бизнес":  "📈",
+            "Медиа и Развлечения": "🍿",
+            "Мировые Новости":     "🌍",
+            "Политика и Иное":     "🏛",
+        }
 
-    cat_emojis = {
-        "Технологии и Игры":   "🕹",
-        "Экономика и Бизнес":  "📈",
-        "Медиа и Развлечения": "🍿",
-        "Мировые Новости":     "🌍",
-        "Политика и Иное":     "🏛",
-    }
+        for cat_idx, (cat_name, topics) in enumerate(digest.items(), 1):
+            emoji = cat_emojis.get(cat_name, "📰")
+            await upd(
+                f"⏳ <b>Дайджест</b> — отправляю категории...\n"
+                f"{emoji} {html_text(cat_name)} ({cat_idx}/{total_cats})\n"
+                f"📊 Найдено {total_topics} тем во всех категориях"
+            )
 
-    for cat_idx, (cat_name, topics) in enumerate(digest.items(), 1):
-        emoji = cat_emojis.get(cat_name, "📰")
-        await upd(
-            f"⏳ <b>Дайджест</b> — отправляю категории...\n"
-            f"{emoji} {html_text(cat_name)} ({cat_idx}/{total_cats})\n"
-            f"📊 Найдено {total_topics} тем во всех категориях"
-        )
+            for chat_id in target_chats:
+                if cat_name not in get_enabled_categories(chat_id):
+                    continue
+                excluded = get_user_excluded(chat_id)
+                filtered = [t for t in topics if not is_blocked(t['main_title'], excluded)]
+                if fresh_only:
+                    filtered = filter_digest_topics_for_fresh(filtered, get_digest_seen_urls(chat_id))
+                if not filtered:
+                    continue
 
-        for chat_id in target_chats:
-            if cat_name not in get_enabled_categories(chat_id):
-                continue
-            excluded = get_user_excluded(chat_id)
-            filtered = [t for t in topics if not is_blocked(t['main_title'], excluded)]
-            if not filtered:
-                continue
+                # Заголовок категории
+                try:
+                    await bot.send_message(
+                        chat_id,
+                        f"{emoji} <b>Дайджест: {html_text(cat_name)}</b>",
+                        disable_web_page_preview=True
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to send category header to {chat_id}: {e}")
 
-            # Заголовок категории
-            try:
-                await bot.send_message(
-                    chat_id,
-                    f"{emoji} <b>Дайджест: {html_text(cat_name)}</b>",
-                    disable_web_page_preview=True
-                )
-            except Exception as e:
-                logging.error(f"Failed to send category header to {chat_id}: {e}")
+                # Каждая тема — отдельным сообщением с кнопками
+                for t in filtered:
+                    items = t['items'][:5]
+                    multi = len(items) > 1
 
-            # Каждая тема — отдельным сообщением с кнопками
-            for t in filtered:
-                items = t['items'][:5]
-                multi = len(items) > 1
-
-                if multi:
-                    # Несколько источников: короткая шапка из ключевых слов
-                    kws = searxng_client.extract_keywords(t['main_title'])
-                    short_topic = ' · '.join(kws[:4]) if kws else t['main_title'][:60]
-                    topic_text = f"📌 <b>{html_text(short_topic)}</b>\n"
-                    for item in items:
+                    if multi:
+                        # Несколько источников: короткая шапка из ключевых слов
+                        kws = searxng_client.extract_keywords(t['main_title'])
+                        short_topic = ' · '.join(kws[:4]) if kws else t['main_title'][:60]
+                        topic_text = f"📌 <b>{html_text(short_topic)}</b>\n"
+                        for item in items:
+                            src = item.get('source_name', '')
+                            views = item.get('views', '')
+                            views_str = f" — {views} пр." if views else ''
+                            topic_text += f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
+                    else:
+                        # Один источник: просто ссылка, без повтора заголовка
+                        item = items[0]
                         src = item.get('source_name', '')
                         views = item.get('views', '')
                         views_str = f" — {views} пр." if views else ''
-                        topic_text += f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
-                else:
-                    # Один источник: просто ссылка, без повтора заголовка
-                    item = items[0]
-                    src = item.get('source_name', '')
-                    views = item.get('views', '')
-                    views_str = f" — {views} пр." if views else ''
-                    topic_text = f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
+                        topic_text = f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
 
-                markup = InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="👀", callback_data=safe_cb("track", t['main_title'])),
-                    InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", t['main_title']))
-                ]])
-                try:
-                    await bot.send_message(
-                        chat_id, topic_text,
-                        disable_web_page_preview=True,
-                        reply_markup=markup
+                    markup = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="👀", callback_data=safe_cb("track", t['main_title'])),
+                        InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", t['main_title']))
+                    ]])
+                    try:
+                        await bot.send_message(
+                            chat_id, topic_text,
+                            disable_web_page_preview=True,
+                            reply_markup=markup
+                        )
+                        sent_any[chat_id] = True
+                        if fresh_only:
+                            mark_digest_seen(chat_id, collect_topic_urls(t))
+                    except Exception as e:
+                        logging.error(f"Failed to send digest topic to {chat_id}: {e}")
+                    await asyncio.sleep(0.4)
+
+            await asyncio.sleep(1)
+
+    async def send_video_digest_block(
+        file_path: str,
+        status_text: str,
+        title: str,
+        include_latest: bool,
+        include_single_topics: bool,
+        require_repeated: bool,
+        log_label: str,
+    ) -> None:
+        if not os.path.exists(file_path):
+            return
+        await upd(status_text)
+        try:
+            video_digest = await asyncio.to_thread(
+                blogger_digest.build_blogger_digest,
+                file_path,
+                window_hours,
+            )
+        except Exception as e:
+            logging.error(f"{log_label} digest fetch error: {e}")
+            video_digest = None
+
+        if video_digest and video_digest.get("videos"):
+            for chat_id in target_chats:
+                digest_for_chat = video_digest
+                if fresh_only:
+                    digest_for_chat = filter_blogger_digest_for_fresh(
+                        video_digest,
+                        get_digest_seen_urls(chat_id),
                     )
+                if not digest_for_chat.get("videos"):
+                    continue
+                repeated_topics = digest_for_chat.get("repeated_topics") or digest_for_chat.get("repeated")
+                if require_repeated and not repeated_topics:
+                    continue
+                text = render_blogger_digest(
+                    digest_for_chat,
+                    title=f"{title} за {format_window(window_hours)}",
+                    include_latest=include_latest,
+                    include_single_topics=include_single_topics,
+                )
+                try:
+                    await send_long_message(chat_id, text, disable_web_page_preview=True)
+                    sent_any[chat_id] = True
+                    if fresh_only:
+                        mark_digest_seen(chat_id, collect_blogger_urls(digest_for_chat))
                 except Exception as e:
-                    logging.error(f"Failed to send digest topic to {chat_id}: {e}")
-                await asyncio.sleep(0.4)
+                    logging.error(f"Failed to send {log_label} digest to {chat_id}: {e}")
 
-        await asyncio.sleep(1)
+    await send_video_digest_block(
+        BLOGGERS_PATH,
+        "⏳ <b>Дайджест</b> — собираю блок блогеров...",
+        "Блогеры и YouTube-каналы",
+        include_latest=False,
+        include_single_topics=True,
+        require_repeated=False,
+        log_label="Blogger",
+    )
+    await send_video_digest_block(
+        NEWS_CHANNELS_PATH,
+        "⏳ <b>Дайджест</b> — собираю блок новостных каналов...",
+        "Новостные YouTube-каналы",
+        include_latest=False,
+        include_single_topics=False,
+        require_repeated=True,
+        log_label="News channel",
+    )
+
+    if fresh_only:
+        for chat_id, was_sent in sent_any.items():
+            if not was_sent:
+                try:
+                    await bot.send_message(chat_id, "ℹ️ Нового с прошлого fresh-дайджеста нет.")
+                except Exception as e:
+                    logging.error(f"Failed to send empty fresh digest notice to {chat_id}: {e}")
 
     # Удаляем статусное сообщение, чтобы не мусорить чат
     if status_msg:
@@ -1429,7 +1831,13 @@ async def main():
     scheduler.start()
 
     try:
-        await dp.start_polling(bot)
+        while True:
+            try:
+                await dp.start_polling(bot)
+                break
+            except TelegramNetworkError as e:
+                logging.warning(f"Telegram polling failed, retrying in 15s: {e}")
+                await asyncio.sleep(15)
     finally:
         scheduler.shutdown(wait=False)
         await bot.session.close()
