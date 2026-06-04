@@ -20,7 +20,7 @@ Fill in `BOT_TOKEN`, `SEARXNG_BASE_URL`, and `ADMIN_CHAT_IDS` in `.env`.
 Run before committing:
 
 ```powershell
-python -m py_compile .\bot.py .\config.py .\db_backup.py .\feed_security.py .\healthcheck.py .\logging_utils.py .\migrations.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\social_feeds.py .\telegram_html.py .\text_match.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m compileall -q utrends tests
 python -m unittest discover -s tests -v
 docker compose build
 ```
@@ -31,7 +31,7 @@ docker compose build
 - Keep admin-only features behind `ADMIN_CHAT_IDS`.
 - Escape external text before putting it into Telegram HTML.
 - Validate any URL that is fetched based on user/admin input.
-- Prefer small modules with unit tests over growing `bot.py` further.
+- Prefer small modules with unit tests over growing `utrends/bot.py` further.
 
 ## Useful Areas
 

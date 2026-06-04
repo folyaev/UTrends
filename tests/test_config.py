@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from config import env_int
+from utrends.config import env_int
 
 
 class EnvIntTests(unittest.TestCase):

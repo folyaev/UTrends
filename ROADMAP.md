@@ -27,6 +27,6 @@ UTrends уже можно использовать как личного Telegra
 
 ## Качество кода
 
-- Разнести крупные Telegram handlers из `bot.py` по feature-модулям.
+- Разнести крупные Telegram handlers из `utrends/bot.py` по feature-модулям.
 - Добавить typed DTO для RSS items и search results.
 - Добавить linting/formatting проверки, когда структура кода стабилизируется.

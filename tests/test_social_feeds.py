@@ -1,6 +1,6 @@
 import unittest
 
-from social_feeds import build_rsshub_social_feeds
+from utrends.social_feeds import build_rsshub_social_feeds
 
 
 class SocialFeedsTests(unittest.TestCase):

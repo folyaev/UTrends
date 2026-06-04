@@ -4,7 +4,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from migrations import apply_migrations
+from utrends.migrations import apply_migrations
 
 
 class MigrationTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 import unittest
 
-from telegram_html import html_link, html_text
+from utrends.telegram_html import html_link, html_text
 
 
 class TelegramHtmlTests(unittest.TestCase):

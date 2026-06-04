@@ -49,19 +49,19 @@ Telegram HTML, rate limit, структурированные JSON-логи и u
 ```text
 Пользователь Telegram
    |
-aiogram bot.py
+aiogram utrends.bot
    |
-   +-- rss_parser.py       RSS, кластеризация дайджеста, healthcheck источников
-   +-- searxng_client.py   Поиск SearXNG News и парсинг дат
-   +-- trends_parser.py    Google Trends RSS
-   +-- wiki_trends.py      Wikimedia Pageviews API
-   +-- migrations.py       Версии схемы SQLite
-   +-- db_backup.py        Консистентные бэкапы SQLite
-   +-- feed_security.py    SSRF-safe проверка добавляемых RSS
-   +-- rate_limit.py       Cooldown тяжёлых команд
-   +-- social_feeds.py     Опциональные RSSHub-адаптеры VK/OK/X
-   +-- telegram_html.py    Экранирование Telegram HTML
-   +-- text_match.py       Нормализация, matching и дедупликация заголовков
+   +-- utrends/rss_parser.py       RSS, кластеризация дайджеста, healthcheck источников
+   +-- utrends/searxng_client.py   Поиск SearXNG News и парсинг дат
+   +-- utrends/trends_parser.py    Google Trends RSS
+   +-- utrends/wiki_trends.py      Wikimedia Pageviews API
+   +-- utrends/migrations.py       Версии схемы SQLite
+   +-- utrends/db_backup.py        Консистентные бэкапы SQLite
+   +-- utrends/feed_security.py    SSRF-safe проверка добавляемых RSS
+   +-- utrends/rate_limit.py       Cooldown тяжёлых команд
+   +-- utrends/social_feeds.py     Опциональные RSSHub-адаптеры VK/OK/X
+   +-- utrends/telegram_html.py    Экранирование Telegram HTML
+   +-- utrends/text_match.py       Нормализация, matching и дедупликация заголовков
    |
 trends.db + feeds.json + backups/
 ```
@@ -143,13 +143,13 @@ docker compose down
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python bot.py
+python -m utrends.bot
 ```
 
 Проверки:
 
 ```powershell
-python -m py_compile .\bot.py .\config.py .\db_backup.py .\feed_security.py .\healthcheck.py .\logging_utils.py .\migrations.py .\rate_limit.py .\rss_parser.py .\searxng_client.py .\social_feeds.py .\telegram_html.py .\text_match.py .\trends_parser.py .\wiki_trends.py .\url_utils.py
+python -m compileall -q utrends tests
 python -m unittest discover -s tests -v
 ```
 

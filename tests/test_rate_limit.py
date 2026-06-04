@@ -1,6 +1,6 @@
 import unittest
 
-from rate_limit import RateLimiter
+from utrends.rate_limit import RateLimiter
 
 
 class RateLimiterTests(unittest.TestCase):

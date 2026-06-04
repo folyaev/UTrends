@@ -1,6 +1,6 @@
 import unittest
 
-from text_match import matches_query, title_signature, titles_similar
+from utrends.text_match import matches_query, title_signature, titles_similar
 
 
 class TextMatchTests(unittest.TestCase):

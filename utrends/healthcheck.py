@@ -3,7 +3,7 @@ import sys
 
 
 def is_bot_process(command: str) -> bool:
-    return "python" in command and "bot.py" in command
+    return "python" in command and ("bot.py" in command or "utrends.bot" in command)
 
 
 def main() -> int:

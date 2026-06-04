@@ -2,10 +2,6 @@
 import sqlite3
 import os
 import json
-import trends_parser
-import rss_parser
-import wiki_trends
-import searxng_client
 import feedparser
 import logging
 import time
@@ -18,15 +14,16 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from config import env_int
-from db_backup import create_backup
-from feed_security import fetch_public_feed
-from logging_utils import configure_logging
-from migrations import apply_migrations
-from rate_limit import RateLimiter
-from telegram_html import html_link, html_text
-from text_match import matches_query, title_signature
-from url_utils import normalize_article_url
+from . import rss_parser, searxng_client, trends_parser, wiki_trends
+from .config import env_int
+from .db_backup import create_backup
+from .feed_security import fetch_public_feed
+from .logging_utils import configure_logging
+from .migrations import apply_migrations
+from .rate_limit import RateLimiter
+from .telegram_html import html_link, html_text
+from .text_match import matches_query, title_signature
+from .url_utils import normalize_article_url
 
 load_dotenv()
 
@@ -68,7 +65,8 @@ RADAR_PRIORITY_DOMAINS = (
 )
 STALE_DAYS            = env_int("STALE_DAYS", 14)   # через сколько дней без новостей спрашивать о подписке
 # Абсолютные пути — не зависят от рабочей директории при запуске
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR   = os.path.dirname(PACKAGE_DIR)
 DB_PATH    = os.path.join(BASE_DIR, "trends.db")
 FEEDS_PATH = os.path.join(BASE_DIR, "feeds.json")
 BACKUP_DIR = os.getenv("BACKUP_DIR", os.path.join(BASE_DIR, "backups"))

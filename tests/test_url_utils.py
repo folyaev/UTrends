@@ -1,6 +1,6 @@
 import unittest
 
-from url_utils import normalize_article_url
+from utrends.url_utils import normalize_article_url
 
 
 class NormalizeArticleUrlTests(unittest.TestCase):

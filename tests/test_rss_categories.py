@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import rss_parser
+from utrends import rss_parser
 
 
 class RssCategoriesTests(unittest.TestCase):

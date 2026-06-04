@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-import rss_parser
+from utrends import rss_parser
 
 
 class RssHttpTests(unittest.TestCase):
@@ -12,7 +12,7 @@ class RssHttpTests(unittest.TestCase):
         response = Mock()
         session = Mock()
         session.get.return_value = response
-        with patch("rss_parser.get_http_session", return_value=session):
+        with patch("utrends.rss_parser.get_http_session", return_value=session):
             result = rss_parser.fetch_url("https://example.com/feed.xml")
 
         self.assertIs(result, response)
@@ -24,7 +24,7 @@ class RssHttpTests(unittest.TestCase):
         response.raise_for_status.assert_called_once()
 
     def test_get_http_session_mounts_retry_adapters(self):
-        with patch("rss_parser.requests.Session") as session_factory:
+        with patch("utrends.rss_parser.requests.Session") as session_factory:
             session = session_factory.return_value
             result = rss_parser.get_http_session()
 

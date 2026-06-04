@@ -8,10 +8,10 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from collections import defaultdict
-from config import env_int
+from .config import env_int
 from requests.adapters import HTTPAdapter
-from social_feeds import build_rsshub_social_feeds
-from text_match import matches_query, title_signature, token_set, titles_similar
+from .social_feeds import build_rsshub_social_feeds
+from .text_match import matches_query, title_signature, token_set, titles_similar
 from urllib3.util import Retry
 
 FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)

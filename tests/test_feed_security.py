@@ -1,7 +1,7 @@
 import socket
 import unittest
 
-from feed_security import validate_public_http_url
+from utrends.feed_security import validate_public_http_url
 
 
 def resolver_for(address):

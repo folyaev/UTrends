@@ -12,4 +12,4 @@ COPY . .
 
 # trends.db и feeds.json будут монтироваться как volume —
 # при запуске они не перезаписываются из образа
-CMD ["python", "bot.py"]
+CMD ["python", "-m", "utrends.bot"]

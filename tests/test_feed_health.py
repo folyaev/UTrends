@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import rss_parser
+from utrends import rss_parser
 
 
 class FakeResponse:
@@ -16,7 +16,7 @@ class FakeResponse:
 
 
 class FeedHealthTests(unittest.TestCase):
-    @patch("rss_parser.fetch_url", return_value=FakeResponse())
+    @patch("utrends.rss_parser.fetch_url", return_value=FakeResponse())
     def test_check_source_health_reports_success(self, get):
         result = rss_parser.check_source_health("https://example.com/feed.xml")
         self.assertTrue(result["ok"])
@@ -24,14 +24,14 @@ class FeedHealthTests(unittest.TestCase):
         self.assertEqual(result["entries"], 1)
         get.assert_called_once()
 
-    @patch("rss_parser.fetch_url", side_effect=RuntimeError("offline"))
+    @patch("utrends.rss_parser.fetch_url", side_effect=RuntimeError("offline"))
     def test_check_source_health_reports_error(self, get):
         result = rss_parser.check_source_health("https://example.com/feed.xml")
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "offline")
         get.assert_called_once()
 
-    @patch("rss_parser.check_source_health")
+    @patch("utrends.rss_parser.check_source_health")
     def test_check_all_sources_adds_category(self, check):
         check.side_effect = lambda url: {
             "url": url, "ok": True, "status_code": 200,

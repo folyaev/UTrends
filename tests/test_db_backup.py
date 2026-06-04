@@ -4,7 +4,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from db_backup import create_backup
+from utrends.db_backup import create_backup
 
 
 class DbBackupTests(unittest.TestCase):

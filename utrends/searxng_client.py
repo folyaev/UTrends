@@ -5,7 +5,7 @@ import requests
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from config import env_int
+from .config import env_int
 
 SEARXNG_BASE_URL = os.getenv("SEARXNG_BASE_URL", "http://host.docker.internal:8888")
 SEARXNG_TIMEOUT_SECONDS = env_int("SEARXNG_TIMEOUT_SECONDS", 10)

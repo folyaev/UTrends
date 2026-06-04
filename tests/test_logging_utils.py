@@ -2,7 +2,7 @@ import json
 import logging
 import unittest
 
-from logging_utils import JsonLogFormatter
+from utrends.logging_utils import JsonLogFormatter
 
 
 class LoggingUtilsTests(unittest.TestCase):
