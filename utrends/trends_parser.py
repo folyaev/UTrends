@@ -3,6 +3,23 @@ import logging
 import requests
 import xml.etree.ElementTree as ET
 
+
+def parse_traffic_value(value: str) -> int:
+    raw = (value or "").strip().lower().replace(",", "").replace(" ", "")
+    raw = raw.rstrip("+")
+    multiplier = 1
+    if raw.endswith("k"):
+        multiplier = 1_000
+        raw = raw[:-1]
+    elif raw.endswith("m"):
+        multiplier = 1_000_000
+        raw = raw[:-1]
+    try:
+        return int(float(raw) * multiplier)
+    except ValueError:
+        return 0
+
+
 def fetch_google_trends(geo="RU"):
     url = f"https://trends.google.com/trending/rss?geo={geo}"
     # Instead of using feedparser which sometimes trims custom namespace fields,

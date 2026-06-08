@@ -52,7 +52,15 @@ Telegram-бот для личного мониторинга новостной 
 - `news_channels.json` — YouTube-новостные каналы с большим количеством роликов.
 - `news_video_trends_parser_codex.md` — личные заметки по парсеру.
 
-Для публичного репозитория есть безопасный пример `feeds.example.json`.
+Для публичного репозитория есть безопасные примеры без приватных списков:
+
+```powershell
+Copy-Item feeds.example.json feeds.json
+Copy-Item bloggers.example.json bloggers.json
+Copy-Item news_channels.example.json news_channels.json
+```
+
+После копирования замените `example.com` и `UC_REPLACE_WITH...` на свои RSS URL и YouTube channel_id. `source_id` должен быть коротким стабильным идентификатором без пробелов. `feed_type` используйте как `blogger` для `bloggers.json` и `news_channel` для `news_channels.json`.
 
 ### Формат YouTube-источника
 

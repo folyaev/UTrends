@@ -46,6 +46,10 @@ SEARCH_WINDOW_HRS      = env_int("SEARCH_WINDOW_HOURS", 48)
 SEARCH_TIMEOUT_SECONDS = env_int("SEARCH_TIMEOUT_SECONDS", 30)
 TELEGRAM_TIMEOUT_SECONDS = env_int("TELEGRAM_TIMEOUT_SECONDS", 30)
 FORCE_TRENDS_LIMIT     = env_int("FORCE_TRENDS_LIMIT", 5)
+GOOGLE_DIGEST_MIN_TRAFFIC = env_int("GOOGLE_DIGEST_MIN_TRAFFIC", 5000, minimum=0)
+GOOGLE_DIGEST_LIMIT    = env_int("GOOGLE_DIGEST_LIMIT", 10, minimum=1)
+WIKI_DIGEST_MIN_VIEWS  = env_int("WIKI_DIGEST_MIN_VIEWS", 5000, minimum=0)
+WIKI_DIGEST_LIMIT      = env_int("WIKI_DIGEST_LIMIT", 10, minimum=1)
 RSS_FETCH_TIMEOUT_SECONDS = env_int("RSS_FETCH_TIMEOUT_SECONDS", 5)
 SEARCH_COOLDOWN_SECONDS  = env_int("SEARCH_COOLDOWN_SECONDS", 30)
 DIGEST_COOLDOWN_SECONDS  = env_int("DIGEST_COOLDOWN_SECONDS", 60)
@@ -282,6 +286,7 @@ def make_sources_markup(chat_id: int) -> InlineKeyboardMarkup:
     for category in load_feed_categories():
         mark = "✅" if category in enabled else "⬜"
         rows.append([InlineKeyboardButton(text=f"{mark} {category}", callback_data=safe_cb("source", category))])
+    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data="sources_close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def enforce_rate_limit(message: types.Message, command: str, cooldown_seconds: int) -> bool:
@@ -332,7 +337,7 @@ def render_search_page(query: str, results: list[dict], page: int, partial_notic
 
     remaining = len(results) - end
     rows = [[
-        InlineKeyboardButton(text="👀", callback_data=safe_cb("track", query)),
+        InlineKeyboardButton(text="🔔", callback_data=safe_cb("track", query)),
         InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", query)),
     ]]
     if remaining > 0:
@@ -368,6 +373,30 @@ def render_feedhealth_page(results: list[dict], page: int) -> tuple[str, InlineK
                 InlineKeyboardButton(text=f"➡️ Ещё {min(remaining, FEEDHEALTH_PAGE_SIZE)}", callback_data="feedhealth_next")
             ]])
     return text, None
+
+
+def render_google_trends_digest(trends: list[dict]) -> str:
+    text = (
+        f"🔎 <b>Google Trends: больше {GOOGLE_DIGEST_MIN_TRAFFIC:,} запросов</b>\n\n"
+    ).replace(",", " ")
+    for idx, trend in enumerate(trends[:GOOGLE_DIGEST_LIMIT], 1):
+        traffic = trend.get("traffic") or ""
+        traffic_text = f" — <i>{html_text(traffic)}</i>" if traffic else ""
+        text += f"{idx}. <b>{html_text(trend['title'])}</b>{traffic_text}\n"
+        for news in (trend.get("news") or [])[:2]:
+            text += f"🔹 {html_link(news['url'], news['title'])}\n"
+        text += "\n"
+    return text.rstrip()
+
+
+def render_wiki_digest(articles: list[dict]) -> str:
+    text = (
+        f"📚 <b>Русская Википедия: больше {WIKI_DIGEST_MIN_VIEWS:,} просмотров</b>\n\n"
+    ).replace(",", " ")
+    for idx, article in enumerate(articles[:WIKI_DIGEST_LIMIT], 1):
+        views = f"{article['views']:,}".replace(",", " ")
+        text += f"{idx}. {html_link(article['url'], article['title'])} — {views}\n"
+    return text.rstrip()
 
 
 def render_blogger_digest(
@@ -1092,7 +1121,7 @@ async def process_track_callback(callback_query: types.CallbackQuery):
     except sqlite3.IntegrityError:
         await safe_answer_callback(callback_query, text="ℹ️ Вы уже следите за этой темой!", show_alert=True)
 
-    # Replace 👀 with ✅ in the message button after tracking
+    # Replace the track button with a check mark after tracking.
     try:
         current = callback_query.message.reply_markup
         if current:
@@ -1151,11 +1180,11 @@ async def subs_handler(message: types.Message):
         topics = cursor.fetchall()
 
     if not topics:
-        await message.reply("👀 Вы пока не следите ни за одной темой.")
+        await message.reply("🔔 Вы пока не следите ни за одной темой.")
         return
 
     await message.reply(
-        "👀 <b>Ваши отслеживаемые темы:</b>\nНажмите ❌, чтобы отписаться.",
+        "🔔 <b>Ваши отслеживаемые темы:</b>\nНажмите ❌, чтобы отписаться.",
         parse_mode=ParseMode.HTML,
         reply_markup=make_subs_markup(topics)
     )
@@ -1186,7 +1215,7 @@ async def process_unfollow_callback(callback_query: types.CallbackQuery):
         )
     else:
         await bot.edit_message_text(
-            "👀 Список отслеживаемых тем пуст.",
+            "🔔 Список отслеживаемых тем пуст.",
             chat_id=chat_id,
             message_id=callback_query.message.message_id
         )
@@ -1249,6 +1278,21 @@ async def source_toggle_callback(callback_query: types.CallbackQuery):
 
     await callback_query.message.edit_reply_markup(reply_markup=make_sources_markup(chat_id))
     await safe_answer_callback(callback_query, text="Настройки источников обновлены.")
+
+
+@dp.callback_query(lambda c: c.data == 'sources_close')
+async def sources_close_callback(callback_query: types.CallbackQuery):
+    chat_id = callback_query.message.chat.id
+    message_id = callback_query.message.message_id
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramBadRequest:
+        await bot.edit_message_text(
+            "Настройки источников закрыты.",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+    await safe_answer_callback(callback_query)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('unblock|'))
@@ -1511,7 +1555,7 @@ async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = Fa
                         topic_text = f"🔗 {html_link(item['link'], item['title'])} {html_text(src)}{html_text(views_str)}\n"
 
                     markup = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="👀", callback_data=safe_cb("track", t['main_title'])),
+                        InlineKeyboardButton(text="🔔", callback_data=safe_cb("track", t['main_title'])),
                         InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", t['main_title']))
                     ]])
                     try:
@@ -1528,6 +1572,66 @@ async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = Fa
                     await asyncio.sleep(0.4)
 
             await asyncio.sleep(1)
+
+    if not fresh_only:
+        await upd("⏳ <b>Дайджест</b> — собираю Google Trends и Википедию...")
+        try:
+            google_trends = await asyncio.to_thread(trends_parser.fetch_google_trends, geo="RU")
+        except Exception as e:
+            logging.error(f"Google Trends digest fetch error: {e}")
+            google_trends = []
+
+        hot_google_trends = [
+            trend for trend in google_trends
+            if trends_parser.parse_traffic_value(trend.get("traffic", "")) > GOOGLE_DIGEST_MIN_TRAFFIC
+        ][:GOOGLE_DIGEST_LIMIT]
+
+        try:
+            wiki_articles = await asyncio.to_thread(
+                wiki_trends.fetch_wikipedia_trending,
+                'ru',
+                WIKI_DIGEST_LIMIT * 2,
+            )
+        except Exception as e:
+            logging.error(f"Wikipedia digest fetch error: {e}")
+            wiki_articles = []
+
+        hot_wiki_articles = [
+            article for article in wiki_articles
+            if article.get("views", 0) > WIKI_DIGEST_MIN_VIEWS
+        ][:WIKI_DIGEST_LIMIT]
+
+        for chat_id in target_chats:
+            excluded = get_user_excluded(chat_id)
+            chat_google_trends = [
+                trend for trend in hot_google_trends
+                if not is_blocked(trend["title"], excluded)
+            ]
+            if chat_google_trends:
+                try:
+                    await send_long_message(
+                        chat_id,
+                        render_google_trends_digest(chat_google_trends),
+                        disable_web_page_preview=True,
+                    )
+                    sent_any[chat_id] = True
+                except Exception as e:
+                    logging.error(f"Failed to send Google Trends digest to {chat_id}: {e}")
+
+            chat_wiki_articles = [
+                article for article in hot_wiki_articles
+                if not is_blocked(article["title"], excluded)
+            ]
+            if chat_wiki_articles:
+                try:
+                    await send_long_message(
+                        chat_id,
+                        render_wiki_digest(chat_wiki_articles),
+                        disable_web_page_preview=True,
+                    )
+                    sent_any[chat_id] = True
+                except Exception as e:
+                    logging.error(f"Failed to send Wikipedia digest to {chat_id}: {e}")
 
     async def send_video_digest_block(
         file_path: str,
@@ -1704,7 +1808,7 @@ async def check_trends(force_send=False, force_chat_id=None, status_msg=None):
                 text += f"🔹 {html_link(n['url'], n['title'])}\n"
 
         markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👀", callback_data=safe_cb("track", t['title'])),
+            InlineKeyboardButton(text="🔔", callback_data=safe_cb("track", t['title'])),
             InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", t['title']))
         ]])
 

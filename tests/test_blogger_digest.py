@@ -52,6 +52,12 @@ class BloggerDigestTests(unittest.TestCase):
             ["Topic one", "Topic two", "Topic three"],
         )
 
+    def test_split_title_topics_ignores_live_prefix(self):
+        self.assertEqual(
+            blogger_digest.split_title_topics("LIVE: OSCE briefing on Armenia election"),
+            ["OSCE briefing on Armenia election"],
+        )
+
     def test_parse_chapters_validates_order_and_filters_noise(self):
         chapters = blogger_digest.parse_chapters(
             "00:00 Intro\n"
@@ -181,6 +187,41 @@ class BloggerDigestTests(unittest.TestCase):
 
         self.assertEqual(digest["repeated_topics"], [])
         self.assertEqual(digest["single_topics"][0]["item_count"], 2)
+
+    def test_live_prefix_does_not_create_repeated_topic(self):
+        now = 1_700_000_000
+        videos_by_url = {
+            "feed-a": [{
+                "title": "LIVE: Beirut skyline",
+                "link": "https://youtu.be/a",
+                "video_url": "https://youtu.be/a",
+                "channel": "A",
+                "chapters": [],
+                "title_topics": ["LIVE", "Beirut skyline"],
+                "time": now,
+                "words": blogger_digest.token_set("LIVE Beirut skyline"),
+            }],
+            "feed-b": [{
+                "title": "LIVE: Tel Aviv skyline",
+                "link": "https://youtu.be/b",
+                "video_url": "https://youtu.be/b",
+                "channel": "B",
+                "chapters": [],
+                "title_topics": ["LIVE", "Tel Aviv skyline"],
+                "time": now,
+                "words": blogger_digest.token_set("LIVE Tel Aviv skyline"),
+            }],
+        }
+
+        with patch.object(blogger_digest, "load_bloggers", return_value=[
+            {"name": "A", "url": "feed-a"},
+            {"name": "B", "url": "feed-b"},
+        ]), patch.object(blogger_digest, "fetch_blogger_channel", side_effect=lambda channel: videos_by_url[channel["url"]]), \
+                patch.object(blogger_digest.time, "time", return_value=now):
+            digest = blogger_digest.build_blogger_digest("bloggers.json", time_window_hours=24)
+
+        self.assertEqual(digest["repeated_topics"], [])
+        self.assertNotIn("LIVE", [cluster["main_title"] for cluster in digest["topic_clusters"]])
 
     def test_detects_shorts(self):
         self.assertTrue(blogger_digest.is_short_video("https://youtube.com/shorts/abc", "Title"))

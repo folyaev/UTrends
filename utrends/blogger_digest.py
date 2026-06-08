@@ -33,6 +33,13 @@ TITLE_CLEANUP_SUFFIXES = (
     ": Last Week Tonight with John Oliver (HBO)",
 )
 TITLE_SPLITTERS = (" / ", " | ", " // ", " — ", " - ", "? ", ": ")
+TOPIC_NOISE_EXACT = {
+    "live",
+    "watch live",
+    "breaking news",
+    "latest news",
+    "news live",
+}
 CHAPTER_NOISE = (
     "подписывайтесь",
     "реклама",
@@ -43,6 +50,12 @@ CHAPTER_NOISE = (
     "сотрудничество",
     "поддержать",
 )
+
+
+def is_noise_topic(topic: str) -> bool:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", " ", topic or "").strip().lower()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized in TOPIC_NOISE_EXACT
 
 
 def load_bloggers(file_path: str = "bloggers.json") -> list[dict]:
@@ -140,9 +153,17 @@ def split_title_topics(title: str) -> list[str]:
             clean_title = clean_title.split(suffix, 1)[0].strip()
     for splitter in TITLE_SPLITTERS:
         if splitter in clean_title:
-            parts = [part.strip() for part in clean_title.split(splitter) if len(part.strip()) > 2]
+            parts = [
+                part.strip()
+                for part in clean_title.split(splitter)
+                if len(part.strip()) > 2 and not is_noise_topic(part)
+            ]
             if len(parts) > 1:
                 return parts[:4]
+            if parts:
+                return parts[:1]
+    if is_noise_topic(clean_title):
+        return []
     return [clean_title]
 
 
@@ -224,7 +245,7 @@ def _topic_mentions(videos: list[dict]) -> list[dict]:
         video_url = video.get("video_url") or canonical_video_url(link)
         for topic in video.get("title_topics") or [video.get("title", "")]:
             topic = (topic or "").strip()
-            if len(topic) < 3:
+            if len(topic) < 3 or is_noise_topic(topic):
                 continue
             mentions.append({
                 "topic": topic,
