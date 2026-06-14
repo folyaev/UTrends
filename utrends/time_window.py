@@ -1,5 +1,7 @@
 import re
 
+WindowParseResult = tuple[int, None] | tuple[None, str]
+
 
 def format_window(hours: int) -> str:
     if hours % 24 == 0:
@@ -12,7 +14,7 @@ def parse_window_arg(
     text: str | None,
     default_hours: int,
     max_hours: int,
-) -> tuple[int | None, str | None]:
+) -> WindowParseResult:
     args = (text or "").split(maxsplit=1)
     if len(args) < 2:
         return default_hours, None

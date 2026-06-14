@@ -1,10 +1,11 @@
-﻿import asyncio
+import asyncio
 import sqlite3
 import os
 import json
 import feedparser
 import logging
 import time
+from typing import cast
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -14,7 +15,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from . import blogger_digest, rss_parser, searxng_client, trends_parser, wiki_trends
+from . import blogger_digest, rich_message as rm, rss_parser, searxng_client, trends_parser, wiki_trends
 from .config import env_int
 from .db_backup import create_backup
 from .feed_security import fetch_public_feed
@@ -22,7 +23,7 @@ from .logging_utils import configure_logging
 from .migrations import apply_migrations
 from .rate_limit import RateLimiter
 from .telegram_html import html_link, html_text
-from .text_match import matches_query, title_signature, tracked_topic_matches
+from .text_match import title_signature, tracked_topic_matches
 from .time_window import format_window, parse_window_arg as parse_time_window_arg
 from .url_utils import normalize_article_url
 
@@ -97,6 +98,7 @@ heavy_command_limiter = RateLimiter()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан! Проверьте файл .env")
+BOT_TOKEN = str(BOT_TOKEN)
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -296,8 +298,16 @@ async def enforce_rate_limit(message: types.Message, command: str, cooldown_seco
         return False
     return True
 
-def parse_window_arg(text: str | None) -> tuple[int | None, str | None]:
+def parse_window_arg(text: str | None) -> tuple[int, None] | tuple[None, str]:
     return parse_time_window_arg(text, DIGEST_WINDOW_HRS, MAX_DIGEST_WINDOW_HRS)
+
+
+def callback_message(callback_query: types.CallbackQuery) -> types.Message:
+    return cast(types.Message, callback_query.message)
+
+
+def callback_data(callback_query: types.CallbackQuery) -> str:
+    return callback_query.data or ""
 
 
 def merge_search_results(rss_raw: list[dict], searx_raw: list[dict]) -> list[dict]:
@@ -522,6 +532,30 @@ async def send_long_message(chat_id: int, text: str, **kwargs) -> None:
         if len(parts) > 1 and i < len(parts) - 1:
             await asyncio.sleep(0.3)
 
+
+async def schedule_delete(chat_id: int, message_id: int, delay: float = 60.0) -> None:
+    """Удаляет сообщение через `delay` секунд, игнорируя ошибки."""
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
+
+
+async def try_send_rich(chat_id: int, blocks: list, fallback_html: str, **kwargs) -> None:
+    """
+    Пытается отправить Rich Message (Bot API 10.1).
+    При ошибке — fallback на обычный send_long_message с HTML.
+    """
+    token = BOT_TOKEN
+    if token is None:
+        await send_long_message(chat_id, fallback_html, disable_web_page_preview=True)
+        return
+    result = await rm.send_rich_message(token, chat_id, blocks, **kwargs)
+    if result is None:
+        # fallback
+        await send_long_message(chat_id, fallback_html, disable_web_page_preview=True)
+
 async def send_video_stats(
     chat_id: int,
     status_msg,
@@ -574,17 +608,30 @@ async def send_video_stats(
         )
         return
 
+    full_title = f"{title} за {format_window(window_hours)}"
     text = render_blogger_digest(
         digest,
-        title=f"{title} за {format_window(window_hours)}",
+        title=full_title,
         include_latest=include_latest,
         include_single_topics=include_single_topics,
+    )
+    blocks = rm.build_blocks_blogger(
+        digest,
+        title=full_title,
+        repeated_limit=BLOGGER_REPEATED_TOPIC_LIMIT,
+        examples_per_topic=BLOGGER_EXAMPLES_PER_TOPIC,
+        snippet_chars=BLOGGER_SNIPPET_CHARS,
+        chapters_per_example=BLOGGER_CHAPTERS_PER_EXAMPLE,
+        latest_limit=BLOGGER_LATEST_LIMIT,
+        include_latest=include_latest,
+        include_single_topics=include_single_topics,
+        single_topic_limit=BLOGGER_SINGLE_TOPIC_LIMIT,
     )
     try:
         await bot.delete_message(chat_id=status_msg.chat.id, message_id=status_msg.message_id)
     except Exception:
         pass
-    await send_long_message(chat_id, text, disable_web_page_preview=True)
+    await try_send_rich(chat_id, blocks, fallback_html=text)
 
 async def safe_answer_callback(callback_query: types.CallbackQuery, *args, **kwargs) -> None:
     try:
@@ -619,6 +666,7 @@ async def start_handler(message: types.Message):
         "🔸 <b>/bloggers</b> или <b>/bloggers 6d</b> — статистика тем у блогеров.\n"
         "🔸 <b>/search запрос</b> — поиск по всем источникам за последние 48 часов.\n"
         "🔸 <b>/force</b> — проверить горячие поисковые тренды из Google Trends (Россия).\n"
+        "🔸 <b>/follow тема</b> — подписаться на тему напрямую (аналог кнопки 🔔).\n"
         "🔸 <b>/subs</b> — список тем, за которыми вы следите.\n"
         "🔸 <b>/ignored</b> — список скрытых тем (можно разблокировать).\n"
         "🔸 <b>/sources</b> — включить или отключить категории источников.\n"
@@ -643,6 +691,7 @@ async def help_handler(message: types.Message):
         "🔸 <b>/bloggers</b> — статистика тем у блогеров. Можно: <code>/bloggers 6d</code>.\n"
         "🔸 <b>/search запрос</b> — поиск по RSS-лентам за последние 48 часов.\n"
         "🔸 <b>/force</b> — принудительно получить тренды из Google Trends.\n"
+        "🔸 <b>/follow тема</b> — подписаться на тему: <code>/follow Путин Сочи</code>.\n"
         "🔸 <b>/subs</b> — просмотр и удаление отслеживаемых тем.\n"
         "🔸 <b>/ignored</b> — скрытые темы (можно разблокировать).\n"
         "🔸 <b>/sources</b> — категории RSS-источников.\n"
@@ -660,7 +709,7 @@ async def addfeed_handler(message: types.Message):
         await message.reply("⛔ Добавлять общие RSS-ленты могут только администраторы.")
         return
 
-    args = message.text.split(maxsplit=1)
+    args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
         await message.reply(
             "Укажите URL RSS-ленты. Пример:\n"
@@ -686,7 +735,7 @@ async def addfeed_handler(message: types.Message):
         )
         return
 
-    feed_title = feed.feed.get('title', url)
+    feed_title = cast(dict, feed.feed).get('title', url)
 
     # Читаем текущие категории из feeds.json
     with open(FEEDS_PATH, 'r', encoding='utf-8') as f:
@@ -716,13 +765,14 @@ async def addfeed_handler(message: types.Message):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('addfeed_cat|'))
 async def addfeed_cat_callback(callback_query: types.CallbackQuery):
-    chat_id  = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    chat_id  = query_message.chat.id
     if not is_admin(chat_id):
         pending_feeds.pop(chat_id, None)
         await safe_answer_callback(callback_query, text="⛔ Недостаточно прав.", show_alert=True)
         return
 
-    cat_idx  = int(callback_query.data.split('|')[1])
+    cat_idx  = int(callback_data(callback_query).split('|')[1])
     url      = pending_feeds.pop(chat_id, None)
 
     if not url:
@@ -743,7 +793,7 @@ async def addfeed_cat_callback(callback_query: types.CallbackQuery):
         f"<code>{html_text(url)}</code>\n\n"
         "Она появится в следующем дайджесте.",
         chat_id=chat_id,
-        message_id=callback_query.message.message_id,
+        message_id=query_message.message_id,
         parse_mode=ParseMode.HTML
     )
     await safe_answer_callback(callback_query)
@@ -784,7 +834,8 @@ async def feedhealth_handler(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == 'feedhealth_next')
 async def feedhealth_next_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    chat_id = query_message.chat.id
     session = feedhealth_sessions.get(chat_id)
     if not session:
         await safe_answer_callback(callback_query, text="❌ Сессия истекла. Повторите /feedhealth.", show_alert=True)
@@ -799,7 +850,7 @@ async def feedhealth_next_callback(callback_query: types.CallbackQuery):
     else:
         feedhealth_sessions.pop(chat_id, None)
 
-    await callback_query.message.edit_text(text, disable_web_page_preview=True, reply_markup=markup)
+    await query_message.edit_text(text, disable_web_page_preview=True, reply_markup=markup)
     await safe_answer_callback(callback_query)
 
 
@@ -848,8 +899,6 @@ async def backup_handler(message: types.Message):
         message_id=status.message_id,
         parse_mode=ParseMode.HTML,
     )
-
-
 @dp.message(Command("stop"))
 async def stop_handler(message: types.Message):
     """Спрашивает подтверждение перед отпиской."""
@@ -866,7 +915,8 @@ async def stop_handler(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "confirm_stop")
 async def confirm_stop_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    chat_id = query_message.chat.id
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM subscribers WHERE chat_id = ?", (chat_id,))
@@ -878,16 +928,17 @@ async def confirm_stop_callback(callback_query: types.CallbackQuery):
         if removed else
         "ℹ️ Вы и так не были подписаны."
     )
-    await bot.edit_message_text(text, chat_id=chat_id, message_id=callback_query.message.message_id)
+    await bot.edit_message_text(text, chat_id=chat_id, message_id=query_message.message_id)
     await safe_answer_callback(callback_query)
 
 
 @dp.callback_query(lambda c: c.data == "cancel_stop")
 async def cancel_stop_callback(callback_query: types.CallbackQuery):
+    query_message = callback_message(callback_query)
     await bot.edit_message_text(
         "👍 Отлично, вы остаётесь подписаны на дайджест.",
-        chat_id=callback_query.message.chat.id,
-        message_id=callback_query.message.message_id
+        chat_id=query_message.chat.id,
+        message_id=query_message.message_id
     )
     await safe_answer_callback(callback_query)
 
@@ -930,7 +981,8 @@ async def wiki_handler(message: types.Message):
         views_str = f"{a['views']:,}".replace(',', ' ')
         text += f"{html_link(a['url'], a['title'])} — {views_str}\n"
 
-    await message.reply(text, disable_web_page_preview=True)
+    blocks = rm.build_blocks_wiki(articles, limit=10)
+    await try_send_rich(message.chat.id, blocks, fallback_html=text)
 
 
 @dp.message(Command("digest"))
@@ -939,6 +991,7 @@ async def digest_handler(message: types.Message):
     if error:
         await message.reply(f"⚠️ {error}")
         return
+    assert window_hours is not None
     if not await enforce_rate_limit(message, "digest", DIGEST_COOLDOWN_SECONDS):
         return
 
@@ -955,6 +1008,7 @@ async def bloggers_handler(message: types.Message):
     if error:
         await message.reply(f"⚠️ {error}")
         return
+    assert window_hours is not None
     if not await enforce_rate_limit(message, "bloggers", DIGEST_COOLDOWN_SECONDS):
         return
 
@@ -980,6 +1034,7 @@ async def fresh_handler(message: types.Message):
     if error:
         await message.reply(f"⚠️ {error}")
         return
+    assert window_hours is not None
     if not await enforce_rate_limit(message, "fresh", DIGEST_COOLDOWN_SECONDS):
         return
 
@@ -992,9 +1047,12 @@ async def fresh_handler(message: types.Message):
 
 @dp.message(Command("search"))
 async def search_handler(message: types.Message):
-    args = message.text.split(maxsplit=1)
+    args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
-        await message.reply("Пожалуйста, укажите запрос. Пример: `/search apple`", parse_mode=ParseMode.MARKDOWN)
+        await message.reply(
+            "Пожалуйста, укажите запрос. Пример: <code>/search apple</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if not await enforce_rate_limit(message, "search", SEARCH_COOLDOWN_SECONDS):
@@ -1083,7 +1141,8 @@ async def search_handler(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == 'search_next')
 async def search_next_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    chat_id = query_message.chat.id
     session = search_sessions.get(chat_id)
     if not session:
         await safe_answer_callback(callback_query, text="❌ Сессия истекла. Повторите поиск.", show_alert=True)
@@ -1100,16 +1159,18 @@ async def search_next_callback(callback_query: types.CallbackQuery):
     else:
         search_sessions.pop(chat_id, None)
 
-    await callback_query.message.edit_text(text, disable_web_page_preview=True, reply_markup=markup)
+    await query_message.edit_text(text, disable_web_page_preview=True, reply_markup=markup)
     await safe_answer_callback(callback_query)
 
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('track|'))
 async def process_track_callback(callback_query: types.CallbackQuery):
-    topic   = callback_query.data.split('|')[1]
-    chat_id = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    topic   = callback_data(callback_query).split('|')[1]
+    chat_id = query_message.chat.id
 
+    already_tracked = False
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute(
@@ -1117,13 +1178,27 @@ async def process_track_callback(callback_query: types.CallbackQuery):
                 (chat_id, topic, time.time())
             )
             conn.commit()
-        await safe_answer_callback(callback_query, text=f"✅ Теперь вы следите за: {topic}", show_alert=True)
     except sqlite3.IntegrityError:
-        await safe_answer_callback(callback_query, text="ℹ️ Вы уже следите за этой темой!", show_alert=True)
+        already_tracked = True
+
+    await safe_answer_callback(callback_query)  # закрываем спиннер без popup
+
+    # Отправляем подтверждение и удаляем через 60 сек
+    try:
+        if already_tracked:
+            confirm_text = f"ℹ️ Уже слежу за <b>{html_text(topic)}</b>"
+        else:
+            confirm_text = f"🔔 Слежу за <b>{html_text(topic)}</b>\nПришлю уведомление, как появятся новости."
+        confirm = await bot.send_message(
+            chat_id, confirm_text, parse_mode=ParseMode.HTML
+        )
+        asyncio.create_task(schedule_delete(chat_id, confirm.message_id, delay=60.0))
+    except Exception as e:
+        logging.warning(f"Failed to send track confirmation: {e}")
 
     # Replace the track button with a check mark after tracking.
     try:
-        current = callback_query.message.reply_markup
+        current = query_message.reply_markup
         if current:
             new_rows = [
                 [
@@ -1135,7 +1210,7 @@ async def process_track_callback(callback_query: types.CallbackQuery):
                 ]
                 for row in current.inline_keyboard
             ]
-            await callback_query.message.edit_reply_markup(
+            await query_message.edit_reply_markup(
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=new_rows)
             )
     except Exception:
@@ -1144,32 +1219,62 @@ async def process_track_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('ignore|'))
 async def process_ignore_callback(callback_query: types.CallbackQuery):
-    topic   = callback_query.data.split('|')[1]
-    chat_id = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    topic   = callback_data(callback_query).split('|')[1]
+    chat_id = query_message.chat.id
 
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("INSERT INTO blocked_topics (chat_id, topic) VALUES (?, ?)", (chat_id, topic))
             conn.commit()
-        # Удаляем сообщение сразу, без алерта
-        try:
-            await bot.delete_message(
-                chat_id=callback_query.message.chat.id,
-                message_id=callback_query.message.message_id
-            )
-        except Exception:
-            pass
-        await safe_answer_callback(callback_query)  # закрываем спиннер
     except sqlite3.IntegrityError:
-        # Уже скрыта — всё равно удаляем сообщение
-        try:
-            await bot.delete_message(
-                chat_id=callback_query.message.chat.id,
-                message_id=callback_query.message.message_id
+        pass
+
+    await safe_answer_callback(callback_query)  # закрываем спиннер
+    # Удаляем исходное сообщение сразу (скрытая тема — сообщение больше не нужно)
+    try:
+        await bot.delete_message(
+            chat_id=query_message.chat.id,
+            message_id=query_message.message_id
+        )
+    except Exception:
+        pass
+
+
+@dp.message(Command("follow"))
+async def follow_handler(message: types.Message):
+    """Подписка на тему напрямую: /follow <тема>."""
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.reply(
+            "Укажите тему для отслеживания. Пример:\n"
+            "<code>/follow ChatGPT обновление</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    topic = args[1].strip()
+    chat_id = message.chat.id
+    already_tracked = False
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO tracked_topics (chat_id, topic, last_checked) VALUES (?, ?, ?)",
+                (chat_id, topic, time.time()),
             )
-        except Exception:
-            pass
-        await safe_answer_callback(callback_query)
+            conn.commit()
+    except sqlite3.IntegrityError:
+        already_tracked = True
+
+    if already_tracked:
+        text = f"ℹ️ Уже слежу за <b>{html_text(topic)}</b>"
+    else:
+        text = (
+            f"🔔 Слежу за <b>{html_text(topic)}</b>\n"
+            "Пришлю уведомление, как появятся новости."
+        )
+    confirm = await message.reply(text, parse_mode=ParseMode.HTML)
+    asyncio.create_task(schedule_delete(chat_id, confirm.message_id, delay=60.0))
 
 
 @dp.message(Command("subs"))
@@ -1192,8 +1297,9 @@ async def subs_handler(message: types.Message):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('unfollow|'))
 async def process_unfollow_callback(callback_query: types.CallbackQuery):
-    track_id = int(callback_query.data.split('|')[1])
-    chat_id  = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    track_id = int(callback_data(callback_query).split('|')[1])
+    chat_id  = query_message.chat.id
 
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM tracked_topics WHERE id = ? AND chat_id = ?", (track_id, chat_id))
@@ -1210,14 +1316,14 @@ async def process_unfollow_callback(callback_query: types.CallbackQuery):
     if remaining:
         await bot.edit_message_reply_markup(
             chat_id=chat_id,
-            message_id=callback_query.message.message_id,
+            message_id=query_message.message_id,
             reply_markup=make_subs_markup(remaining)
         )
     else:
         await bot.edit_message_text(
             "🔔 Список отслеживаемых тем пуст.",
             chat_id=chat_id,
-            message_id=callback_query.message.message_id
+            message_id=query_message.message_id
         )
 
 
@@ -1250,8 +1356,9 @@ async def sources_handler(message: types.Message):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('source|'))
 async def source_toggle_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.message.chat.id
-    category = callback_query.data.split('|', 1)[1]
+    query_message = callback_message(callback_query)
+    chat_id = query_message.chat.id
+    category = callback_data(callback_query).split('|', 1)[1]
     categories = load_feed_categories()
     if category not in categories:
         await safe_answer_callback(callback_query, text="Категория устарела. Откройте /sources заново.", show_alert=True)
@@ -1276,14 +1383,15 @@ async def source_toggle_callback(callback_query: types.CallbackQuery):
         )
         conn.commit()
 
-    await callback_query.message.edit_reply_markup(reply_markup=make_sources_markup(chat_id))
+    await query_message.edit_reply_markup(reply_markup=make_sources_markup(chat_id))
     await safe_answer_callback(callback_query, text="Настройки источников обновлены.")
 
 
 @dp.callback_query(lambda c: c.data == 'sources_close')
 async def sources_close_callback(callback_query: types.CallbackQuery):
-    chat_id = callback_query.message.chat.id
-    message_id = callback_query.message.message_id
+    query_message = callback_message(callback_query)
+    chat_id = query_message.chat.id
+    message_id = query_message.message_id
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
     except TelegramBadRequest:
@@ -1297,8 +1405,9 @@ async def sources_close_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('unblock|'))
 async def process_unblock_callback(callback_query: types.CallbackQuery):
-    block_id = int(callback_query.data.split('|')[1])
-    chat_id  = callback_query.message.chat.id
+    query_message = callback_message(callback_query)
+    block_id = int(callback_data(callback_query).split('|')[1])
+    chat_id  = query_message.chat.id
 
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM blocked_topics WHERE id = ? AND chat_id = ?", (block_id, chat_id))
@@ -1315,14 +1424,14 @@ async def process_unblock_callback(callback_query: types.CallbackQuery):
     if remaining:
         await bot.edit_message_reply_markup(
             chat_id=chat_id,
-            message_id=callback_query.message.message_id,
+            message_id=query_message.message_id,
             reply_markup=make_ignored_markup(remaining)
         )
     else:
         await bot.edit_message_text(
             "✅ Список скрытых тем пуст.",
             chat_id=chat_id,
-            message_id=callback_query.message.message_id
+            message_id=query_message.message_id
         )
 
 
@@ -1449,7 +1558,7 @@ async def check_tracked_topics():
             conn.commit()
 
 
-async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = False, window_hours: int = DIGEST_WINDOW_HRS):
+async def send_digest(force_chat_id: int | None = None, status_msg=None, fresh_only: bool = False, window_hours: int = DIGEST_WINDOW_HRS):
     logging.info("Generating RSS Digest...")
 
     async def upd(text: str):
@@ -1609,10 +1718,12 @@ async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = Fa
             ]
             if chat_google_trends:
                 try:
-                    await send_long_message(
-                        chat_id,
-                        render_google_trends_digest(chat_google_trends),
-                        disable_web_page_preview=True,
+                    blocks = rm.build_blocks_google_trends(
+                        chat_google_trends, GOOGLE_DIGEST_MIN_TRAFFIC, GOOGLE_DIGEST_LIMIT
+                    )
+                    await try_send_rich(
+                        chat_id, blocks,
+                        fallback_html=render_google_trends_digest(chat_google_trends),
                     )
                     sent_any[chat_id] = True
                 except Exception as e:
@@ -1624,10 +1735,10 @@ async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = Fa
             ]
             if chat_wiki_articles:
                 try:
-                    await send_long_message(
-                        chat_id,
-                        render_wiki_digest(chat_wiki_articles),
-                        disable_web_page_preview=True,
+                    blocks = rm.build_blocks_wiki(chat_wiki_articles, WIKI_DIGEST_LIMIT)
+                    await try_send_rich(
+                        chat_id, blocks,
+                        fallback_html=render_wiki_digest(chat_wiki_articles),
                     )
                     sent_any[chat_id] = True
                 except Exception as e:
@@ -1668,14 +1779,27 @@ async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = Fa
                 repeated_topics = digest_for_chat.get("repeated_topics") or digest_for_chat.get("repeated")
                 if require_repeated and not repeated_topics:
                     continue
+                full_title = f"{title} за {format_window(window_hours)}"
                 text = render_blogger_digest(
                     digest_for_chat,
-                    title=f"{title} за {format_window(window_hours)}",
+                    title=full_title,
                     include_latest=include_latest,
                     include_single_topics=include_single_topics,
                 )
+                blocks = rm.build_blocks_blogger(
+                    digest_for_chat,
+                    title=full_title,
+                    repeated_limit=BLOGGER_REPEATED_TOPIC_LIMIT,
+                    examples_per_topic=BLOGGER_EXAMPLES_PER_TOPIC,
+                    snippet_chars=BLOGGER_SNIPPET_CHARS,
+                    chapters_per_example=BLOGGER_CHAPTERS_PER_EXAMPLE,
+                    latest_limit=BLOGGER_LATEST_LIMIT,
+                    include_latest=include_latest,
+                    include_single_topics=include_single_topics,
+                    single_topic_limit=BLOGGER_SINGLE_TOPIC_LIMIT,
+                )
                 try:
-                    await send_long_message(chat_id, text, disable_web_page_preview=True)
+                    await try_send_rich(chat_id, blocks, fallback_html=text)
                     sent_any[chat_id] = True
                     if fresh_only:
                         mark_digest_seen(chat_id, collect_blogger_urls(digest_for_chat))
@@ -1717,7 +1841,7 @@ async def send_digest(force_chat_id=None, status_msg=None, fresh_only: bool = Fa
             pass
 
 
-async def check_trends(force_send=False, force_chat_id=None, status_msg=None):
+async def check_trends(force_send: bool = False, force_chat_id: int | None = None, status_msg=None):
     logging.info("Checking for new trends...")
 
     async def upd(text: str):
@@ -1758,6 +1882,7 @@ async def check_trends(force_send=False, force_chat_id=None, status_msg=None):
         return
 
     if force_send:
+        assert force_chat_id is not None
         # При /force — перебираем все тренды, пропуская заблокированные и уже отслеживаемые
         target_chat = force_chat_id  # /force всегда один пользователь
         excluded = get_user_excluded(target_chat)
@@ -1877,7 +2002,8 @@ async def check_stale_topics():
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('stale_keep|'))
 async def stale_keep_callback(callback_query: types.CallbackQuery):
-    track_id = int(callback_query.data.split('|')[1])
+    query_message = callback_message(callback_query)
+    track_id = int(callback_data(callback_query).split('|')[1])
     with sqlite3.connect(DB_PATH) as conn:
         # Сбрасываем таймер — пользователь хочет продолжать следить
         conn.execute(
@@ -1887,8 +2013,8 @@ async def stale_keep_callback(callback_query: types.CallbackQuery):
         conn.commit()
     try:
         await bot.delete_message(
-            chat_id=callback_query.message.chat.id,
-            message_id=callback_query.message.message_id
+            chat_id=query_message.chat.id,
+            message_id=query_message.message_id
         )
     except Exception:
         pass
@@ -1897,7 +2023,8 @@ async def stale_keep_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data and c.data.startswith('stale_del|'))
 async def stale_del_callback(callback_query: types.CallbackQuery):
-    track_id = int(callback_query.data.split('|')[1])
+    query_message = callback_message(callback_query)
+    track_id = int(callback_data(callback_query).split('|')[1])
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT topic FROM tracked_topics WHERE id = ?", (track_id,))
@@ -1907,8 +2034,8 @@ async def stale_del_callback(callback_query: types.CallbackQuery):
         conn.commit()
     try:
         await bot.delete_message(
-            chat_id=callback_query.message.chat.id,
-            message_id=callback_query.message.message_id
+            chat_id=query_message.chat.id,
+            message_id=query_message.message_id
         )
     except Exception:
         pass
