@@ -262,12 +262,102 @@ def build_blocks_blogger(
     return blocks
 
 
+def build_blocks_rss_topic(topic: dict) -> list[dict]:
+    """Блоки для одной темы RSS-дайджеста."""
+    from . import searxng_client
+    items = topic['items'][:5]
+    multi = len(items) > 1
+    blocks = []
+
+    if multi:
+        kws = searxng_client.extract_keywords(topic['main_title'])
+        short_topic = ' · '.join(kws[:4]) if kws else topic['main_title'][:60]
+        blocks.append(rb_paragraph(rt_plain("📌 "), rt_bold(short_topic)))
+
+        list_items = []
+        for item in items:
+            src = item.get('source_name', '')
+            views = item.get('views', '')
+            views_str = f" — {views} пр." if views else ''
+            label = f"{item['title']}"
+            if src:
+                label += f" ({src}{views_str})"
+            list_items.append(rt_url(label, item['link']))
+        blocks.append(rb_list(list_items))
+    else:
+        item = items[0]
+        src = item.get('source_name', '')
+        views = item.get('views', '')
+        views_str = f" — {views} пр." if views else ''
+        label = f"🔗 {item['title']}"
+        if src:
+            label += f" ({src}{views_str})"
+        blocks.append(rb_paragraph(rt_url(label, item['link'])))
+
+    return blocks
+
+
 # ── Низкоуровневая отправка ─────────────────────────────────────────────────────
+
+def rich_text_to_html(node) -> str:
+    """Конвертирует узел RichText в HTML-строку."""
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, dict):
+        return ""
+    ntype = node.get("type")
+    if ntype == "plain":
+        return node.get("text", "")
+    elif ntype == "bold":
+        return f"<b>{rich_text_to_html(node.get('text'))}</b>"
+    elif ntype == "italic":
+        return f"<i>{rich_text_to_html(node.get('text'))}</i>"
+    elif ntype == "underline":
+        return f"<u>{rich_text_to_html(node.get('text'))}</u>"
+    elif ntype == "strikethrough":
+        return f"<s>{rich_text_to_html(node.get('text'))}</s>"
+    elif ntype == "spoiler":
+        return f"<tg-spoiler>{rich_text_to_html(node.get('text'))}</tg-spoiler>"
+    elif ntype == "marked":
+        return f"<mark>{rich_text_to_html(node.get('text'))}</mark>"
+    elif ntype == "code":
+        return f"<code>{rich_text_to_html(node.get('text'))}</code>"
+    elif ntype == "url":
+        url = node.get("url", "")
+        return f'<a href="{url}">{rich_text_to_html(node.get("text"))}</a>'
+    elif ntype == "concat":
+        return "".join(rich_text_to_html(t) for t in node.get("texts", []))
+    return ""
+
+
+def blocks_to_html(blocks: list[dict]) -> str:
+    """Конвертирует список блоков RichBlock в единую HTML-строку."""
+    html_parts = []
+    for b in blocks:
+        btype = b.get("type")
+        if btype == "section_heading":
+            html_parts.append(f"<h2>{rich_text_to_html(b.get('content'))}</h2>")
+        elif btype == "paragraph":
+            html_parts.append(f"<p>{rich_text_to_html(b.get('content'))}</p>")
+        elif btype == "divider":
+            html_parts.append("<hr/>")
+        elif btype == "block_quotation":
+            html_parts.append(f"<blockquote>{rich_text_to_html(b.get('content'))}</blockquote>")
+        elif btype == "footer":
+            html_parts.append(f"<footer>{rich_text_to_html(b.get('content'))}</footer>")
+        elif btype == "list":
+            items_html = []
+            for item in b.get("items", []):
+                content = item.get("content")
+                items_html.append(f"<li>{rich_text_to_html(content)}</li>")
+            html_parts.append(f"<ul>{''.join(items_html)}</ul>")
+    return "".join(html_parts)
+
 
 async def send_rich_message(
     token: str,
     chat_id: int,
-    blocks: list[dict],
+    blocks: list[dict] | str,
     **kwargs,
 ) -> dict | None:
     """
@@ -276,10 +366,15 @@ async def send_rich_message(
     Возвращает result-объект при успехе, None при ошибке.
     Вызывающий код должен сделать fallback на send_message + HTML при None.
     """
+    if isinstance(blocks, str):
+        html_content = blocks
+    else:
+        html_content = blocks_to_html(blocks)
+
     url = f"https://api.telegram.org/bot{token}/sendRichMessage"
     payload: dict = {
         "chat_id": chat_id,
-        "rich_message": {"blocks": blocks},
+        "rich_message": {"html": html_content},
         **kwargs,
     }
     try:

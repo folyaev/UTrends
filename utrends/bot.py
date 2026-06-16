@@ -1668,9 +1668,10 @@ async def send_digest(force_chat_id: int | None = None, status_msg=None, fresh_o
                         InlineKeyboardButton(text="🙈", callback_data=safe_cb("ignore", t['main_title']))
                     ]])
                     try:
-                        await bot.send_message(
-                            chat_id, topic_text,
-                            disable_web_page_preview=True,
+                        blocks = rm.build_blocks_rss_topic(t)
+                        await try_send_rich(
+                            chat_id, blocks,
+                            fallback_html=topic_text,
                             reply_markup=markup
                         )
                         sent_any[chat_id] = True
