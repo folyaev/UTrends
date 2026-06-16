@@ -1576,7 +1576,11 @@ async def send_digest(force_chat_id: int | None = None, status_msg=None, fresh_o
     await upd(f"⏳ <i>Загружаю {mode_label} за {format_window(window_hours)}... Это займёт 15–30 секунд.</i>")
 
     try:
-        digest = await asyncio.to_thread(rss_parser.fetch_category_digest, time_window_hours=window_hours)
+        digest = await asyncio.to_thread(
+            rss_parser.fetch_category_digest,
+            time_window_hours=window_hours,
+            archive_db_path=DB_PATH,
+        )
     except Exception as e:
         logging.error(f"RSS digest fetch error: {e}")
         await upd(f"⚠️ Не удалось получить дайджест: <code>{html_text(e)}</code>")

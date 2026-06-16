@@ -174,9 +174,23 @@ def filter_short_segments(
     return [(start, end) for start, end in segments if end - start >= min_segment]
 
 
+def find_ffmpeg() -> str:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        return ffmpeg_path
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        winget_packages = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+        for candidate in winget_packages.glob("Gyan.FFmpeg_*/*/bin/ffmpeg.exe"):
+            if candidate.is_file():
+                return str(candidate)
+
+    raise RuntimeError("ffmpeg not found in PATH or WinGet packages")
+
+
 def export_segments(video_path: str, output_path: str, segments: list[tuple[float, float]], log, on_progress) -> None:
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not found in PATH")
+    ffmpeg = find_ffmpeg()
     if not segments:
         raise RuntimeError("No segments to export")
 
@@ -193,7 +207,7 @@ def export_segments(video_path: str, output_path: str, segments: list[tuple[floa
                 log(f"Segment {idx + 1}/{len(segments)}: {start:.1f}-{end:.1f}s")
                 subprocess.run(
                     [
-                        "ffmpeg",
+                        ffmpeg,
                         "-y",
                         "-i",
                         video_path,
@@ -223,7 +237,7 @@ def export_segments(video_path: str, output_path: str, segments: list[tuple[floa
         log("Concatenating final video")
         subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg,
                 "-y",
                 "-f",
                 "concat",
@@ -424,8 +438,9 @@ class App:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
         image.thumbnail((620, 380))
-        self.preview_image = ImageTk.PhotoImage(image)
-        self.preview.config(image=self.preview_image, text="")
+        preview_image = ImageTk.PhotoImage(image)
+        self.preview_image = preview_image
+        self.preview.config(image=preview_image, text="")
 
     def export(self) -> None:
         if self.info is None:

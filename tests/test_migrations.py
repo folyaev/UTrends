@@ -27,11 +27,12 @@ class MigrationTests(unittest.TestCase):
                     ).fetchall()
                 ]
 
-        self.assertEqual(applied, [1, 2, 3, 4])
+        self.assertEqual(applied, [1, 2, 3, 4, 5])
         self.assertEqual(applied_again, [])
         self.assertIn("tracked_topics", tables)
         self.assertIn("digest_seen_articles", tables)
-        self.assertEqual(versions, [1, 2, 3, 4])
+        self.assertIn("rss_items", tables)
+        self.assertEqual(versions, [1, 2, 3, 4, 5])
 
     def test_migration_adds_stale_column_to_legacy_table(self):
         with tempfile.TemporaryDirectory() as directory:

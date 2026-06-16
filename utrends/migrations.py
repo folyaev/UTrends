@@ -66,11 +66,29 @@ def _migration_004_digest_seen_articles(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migration_005_rss_items_archive(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rss_items (
+            url TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            source_name TEXT,
+            source_url TEXT,
+            category TEXT,
+            published_ts REAL,
+            first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rss_items_published_ts ON rss_items(published_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rss_items_category ON rss_items(category)")
+
+
 MIGRATIONS = (
     (1, "initial_schema", _migration_001_initial_schema),
     (2, "tracked_topics_stale_asked_at", _migration_002_tracked_topics_stale_asked_at),
     (3, "user_source_preferences", _migration_003_user_source_preferences),
     (4, "digest_seen_articles", _migration_004_digest_seen_articles),
+    (5, "rss_items_archive", _migration_005_rss_items_archive),
 )
 
 

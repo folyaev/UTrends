@@ -5,6 +5,7 @@ import re
 import datetime
 import time
 import requests
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from collections import defaultdict
@@ -175,21 +176,79 @@ def load_categories(file_path="feeds.json"):
                 categories[SOCIAL_CATEGORY].append(url)
     return categories
 
-def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
-    categories = load_categories(file_path)
 
+def archive_items(db_path: str, items: list[dict]) -> None:
+    if not db_path or not items:
+        return
+    rows = []
+    for item in items:
+        url = (item.get("link") or item.get("url") or "").strip()
+        title = (item.get("title") or "").strip()
+        if not url or not title:
+            continue
+        rows.append((
+            url,
+            title,
+            item.get("source_name") or item.get("source") or "",
+            item.get("source_url") or "",
+            item.get("category") or "",
+            float(item.get("time") or time.time()),
+        ))
+    if not rows:
+        return
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO rss_items (url, title, source_name, source_url, category, published_ts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET
+                title = excluded.title,
+                source_name = excluded.source_name,
+                source_url = excluded.source_url,
+                category = excluded.category,
+                published_ts = excluded.published_ts,
+                last_seen_at = CURRENT_TIMESTAMP
+            """,
+            rows,
+        )
+        conn.commit()
+
+
+def load_archived_items(db_path: str, time_window_hours: int, allowed_categories=None) -> list[dict]:
     cutoff_time = time.time() - (time_window_hours * 3600)
+    allowed_categories = set(allowed_categories) if allowed_categories is not None else None
+    query = """
+        SELECT title, url, source_name, source_url, category, published_ts
+        FROM rss_items
+        WHERE published_ts > ?
+        ORDER BY published_ts DESC
+    """
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(query, (cutoff_time,)).fetchall()
+    items = []
+    for title, url, source_name, source_url, category, published_ts in rows:
+        if allowed_categories is not None and category not in allowed_categories:
+            continue
+        items.append({
+            "title": title,
+            "link": url,
+            "time": published_ts or 0,
+            "source_name": source_name or "",
+            "source_url": source_url or "",
+            "category": category or "",
+            "words": normalize_text(title),
+        })
+    return items
+
+
+def build_category_digest_from_items(items: list[dict]) -> dict:
     digest = {}
 
-    for cat_name, urls in categories.items():
-        all_items = []
-        for url in urls:
-            items = fetch_source(url)
-            for item in items:
-                if item['time'] > cutoff_time:
-                    item['words'] = normalize_text(item['title'])
-                    item['source_url'] = url
-                    all_items.append(item)
+    grouped_items = defaultdict(list)
+    for item in items:
+        grouped_items[item.get("category") or "RSS"].append(item)
+
+    for cat_name, all_items in grouped_items.items():
 
         # Clustering
         clusters = []
@@ -245,6 +304,28 @@ def fetch_category_digest(file_path="feeds.json", time_window_hours=12):
                 digest[cat_name] = singles
 
     return digest
+
+
+def fetch_category_digest(file_path="feeds.json", time_window_hours=12, archive_db_path: str | None = None):
+    categories = load_categories(file_path)
+
+    cutoff_time = time.time() - (time_window_hours * 3600)
+    all_digest_items = []
+
+    for cat_name, urls in categories.items():
+        for url in urls:
+            items = fetch_source(url)
+            archive_batch = []
+            for item in items:
+                item['words'] = normalize_text(item['title'])
+                item['source_url'] = url
+                item['category'] = cat_name
+                archive_batch.append(item)
+                if item['time'] > cutoff_time:
+                    all_digest_items.append(item)
+            archive_items(archive_db_path, archive_batch)
+
+    return build_category_digest_from_items(all_digest_items)
 
 def search_feeds(query, file_path="feeds.json", time_window_hours=48, allowed_categories=None):
     categories = load_categories(file_path)
